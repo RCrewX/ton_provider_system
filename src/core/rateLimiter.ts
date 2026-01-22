@@ -202,12 +202,14 @@ export class TokenBucketRateLimiter {
             this.tokens--;
 
             // Apply minimum delay between requests (always enforce for rate limiting)
+            // For very low RPS providers, we must always enforce the delay to prevent 429 errors
             const timeSinceLastRefill = Date.now() - this.lastRefill;
             if (timeSinceLastRefill < this.config.minDelayMs) {
                 await sleep(this.config.minDelayMs - timeSinceLastRefill);
             }
             // Note: If timeSinceLastRefill >= minDelayMs, we've already waited long enough
             // due to the token refill mechanism, so no additional delay is needed
+            // However, we still update lastRefill to track when this request was made
 
             this.lastRefill = Date.now();
             return true;
@@ -252,6 +254,10 @@ export class TokenBucketRateLimiter {
                 this.config.maxBackoffMs
             );
         }
+
+        // Reset tokens to 0 on rate limit error to prevent immediate retry
+        // This ensures we wait for backoff + token refill before next request
+        this.tokens = 0;
 
         this.logger.warn(`Rate limit hit, backoff: ${this.currentBackoff}ms, errors: ${this.consecutiveErrors}`);
     }

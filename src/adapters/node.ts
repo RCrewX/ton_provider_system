@@ -10,7 +10,7 @@ import { Address, Cell } from '@ton/core';
 import type { Network, ResolvedProvider, Logger } from '../types';
 import { ProviderManager } from '../core/manager';
 import { normalizeV2Endpoint, toV2Base } from '../utils/endpoint';
-import { withTimeout, fetchWithTimeout } from '../utils/timeout';
+import { withTimeout, fetchWithTimeout, sleep } from '../utils/timeout';
 
 // ============================================================================
 // Console Logger (default)
@@ -405,23 +405,76 @@ export async function getTonClientWithRateLimit(
     manager: ProviderManager
 ): Promise<{
     client: TonClient;
-    withRateLimit: <T>(fn: () => Promise<T>) => Promise<T>;
+    withRateLimit: <T>(fn: () => Promise<T>, maxRetries?: number) => Promise<T>;
 }> {
     const adapter = new NodeAdapter(manager);
     const client = await adapter.getClient();
     
-    const withRateLimit = async <T>(fn: () => Promise<T>): Promise<T> => {
-        // Acquire rate limit token before operation
-        await manager.getEndpointWithRateLimit();
+    const withRateLimit = async <T>(
+        fn: () => Promise<T>,
+        maxRetries: number = 3
+    ): Promise<T> => {
+        let lastError: Error | unknown;
         
-        try {
-            const result = await fn();
-            manager.reportSuccess();
-            return result;
-        } catch (error) {
-            manager.reportError(error as Error);
-            throw error;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                // Acquire rate limit token before operation
+                await manager.getEndpointWithRateLimit(60000);
+                
+                // Execute the operation
+                const result = await fn();
+                
+                // Report success (resets backoff)
+                manager.reportSuccess();
+                return result;
+            } catch (error: any) {
+                lastError = error;
+                
+                // Check if it's a rate limit error (429)
+                const errorMsg = error?.message || String(error) || '';
+                const is429 = 
+                    errorMsg.includes('429') ||
+                    errorMsg.includes('rate limit') ||
+                    error?.status === 429 ||
+                    error?.response?.status === 429;
+                
+                if (is429 && attempt < maxRetries) {
+                    // Report rate limit error (applies backoff)
+                    manager.reportError(error);
+                    
+                    // Get current backoff from rate limiter state
+                    const managerState = manager.getState();
+                    const provider = manager.getActiveProvider();
+                    let backoff = 1000; // Default backoff
+                    
+                    if (provider && managerState.providers) {
+                        const providerState = managerState.providers.get(provider.id);
+                        if (providerState?.rateLimit?.currentBackoff) {
+                            backoff = providerState.rateLimit.currentBackoff;
+                        }
+                    }
+                    
+                    // Wait for backoff + additional delay based on attempt
+                    // For low RPS providers (like Tatum with 3 RPS = 334ms), we need longer waits
+                    const additionalDelay = Math.min(attempt * 500, 2000);
+                    const waitTime = backoff + additionalDelay;
+                    
+                    // Use console.warn since we can't access private logger
+                    console.warn(
+                        `[ProviderSystem] Rate limit error (429), retrying in ${waitTime}ms (attempt ${attempt + 1}/${maxRetries + 1})`
+                    );
+                    await sleep(waitTime);
+                    continue;
+                }
+                
+                // Not a 429 error, or max retries reached
+                manager.reportError(error);
+                throw error;
+            }
         }
+        
+        // Should never reach here, but TypeScript needs it
+        throw lastError || new Error('Rate limit retries exhausted');
     };
     
     return { client, withRateLimit };

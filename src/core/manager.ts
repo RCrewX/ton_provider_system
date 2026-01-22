@@ -142,22 +142,9 @@ export class ProviderManager {
 
         // Create components
         this.registry = new ProviderRegistry(mergedConfig, this.options.logger);
-        this.healthChecker = createHealthChecker(
-            {
-                timeoutMs: this.options.requestTimeoutMs,
-                maxBlocksBehind: this.options.maxBlocksBehind,
-            },
-            this.options.logger
-        );
         this.rateLimiter = createRateLimiterManager(this.options.logger);
-        this.selector = createSelector(
-            this.registry,
-            this.healthChecker,
-            undefined,
-            this.options.logger
-        );
-
-        // Configure rate limiters for each provider
+        
+        // Configure rate limiters for each provider BEFORE creating health checker
         for (const provider of this.registry.getAllProviders()) {
             const config = getRateLimitForType(provider.type);
             this.rateLimiter.setConfig(provider.id, {
@@ -166,6 +153,23 @@ export class ProviderManager {
                 minDelayMs: Math.ceil(1000 / provider.rps),
             });
         }
+        
+        // Create health checker with rate limiter
+        this.healthChecker = createHealthChecker(
+            {
+                timeoutMs: this.options.requestTimeoutMs,
+                maxBlocksBehind: this.options.maxBlocksBehind,
+            },
+            this.options.logger,
+            this.rateLimiter
+        );
+        
+        this.selector = createSelector(
+            this.registry,
+            this.healthChecker,
+            undefined,
+            this.options.logger
+        );
 
         this.initialized = true;
         this.notifyListeners();

@@ -16,7 +16,10 @@
  * - toncenter.com: POST to /api/v2/jsonRPC
  * - Chainstack: POST to /api/v2/jsonRPC (needs /jsonRPC suffix!)
  * - TON Access (orbs): Already returns correct JSON-RPC endpoint
- * - QuickNode: Usually needs /jsonRPC appended
+ * - QuickNode: Needs /jsonRPC appended to base URL
+ * - GetBlock: Needs /jsonRPC appended to base URL
+ * - Tatum: Gateway URLs need /jsonRPC appended (gateway.tatum.io/jsonRPC)
+ * - OnFinality: Uses /public or /rpc path with query params - preserve query params
  */
 export function normalizeV2Endpoint(endpoint: string): string {
     let normalized = endpoint.trim();
@@ -31,6 +34,66 @@ export function normalizeV2Endpoint(endpoint: string): string {
         return normalized;
     }
 
+    // Tatum gateway URLs - need /jsonRPC appended
+    // Format: https://ton-testnet.gateway.tatum.io -> https://ton-testnet.gateway.tatum.io/jsonRPC
+    if (normalized.includes('gateway.tatum.io')) {
+        try {
+            const url = new URL(normalized);
+            // If pathname is empty or just '/', append /jsonRPC
+            if (!url.pathname || url.pathname === '/') {
+                return normalized + '/jsonRPC';
+            }
+            // If pathname doesn't end with /jsonRPC, append it
+            if (!url.pathname.toLowerCase().endsWith('/jsonrpc')) {
+                return normalized + '/jsonRPC';
+            }
+        } catch {
+            // Not a valid URL, try simple append
+            return normalized + '/jsonRPC';
+        }
+    }
+
+    // OnFinality URLs - use /public for public access, /rpc for API key access
+    // Format: https://ton-testnet.api.onfinality.io/public or /rpc
+    // Note: API key should be passed in 'apikey' header, not query params
+    if (normalized.includes('onfinality.io')) {
+        try {
+            const url = new URL(normalized);
+            // Remove query params (API key goes in header, not URL)
+            const baseUrl = normalized.split('?')[0];
+            
+            // If pathname is empty or just '/', determine correct path
+            if (!url.pathname || url.pathname === '/') {
+                // Check if API key exists in query (for backward compatibility)
+                // But we'll use /rpc if key exists, /public if not
+                const apikey = url.searchParams.get('apikey');
+                if (apikey && apikey !== '{key}' && apikey.length > 0) {
+                    // API key is set, use /rpc (key will be in header)
+                    return baseUrl.replace(/\/?$/, '/rpc');
+                }
+                // No API key or placeholder not resolved, use /public
+                return baseUrl.replace(/\/?$/, '/public');
+            }
+            // If pathname is /rpc or /public, use it (remove query params)
+            if (url.pathname === '/rpc' || url.pathname === '/public') {
+                return baseUrl;
+            }
+            // If pathname exists but is not /rpc or /public, preserve it
+            return baseUrl;
+        } catch {
+            // Not a valid URL, check if it contains unresolved placeholder
+            if (normalized.includes('{key}')) {
+                // Key not resolved, use /public (remove query string)
+                return normalized.split('?')[0].replace(/\/?$/, '/public');
+            }
+            // Try to append /public as fallback
+            if (!normalized.includes('/rpc') && !normalized.includes('/public')) {
+                return normalized.split('?')[0] + '/public';
+            }
+            return normalized.split('?')[0];
+        }
+    }
+
     // Check if this is a v2 API endpoint that needs /jsonRPC suffix
     // Chainstack format: https://ton-testnet.core.chainstack.com/KEY/api/v2
     // Toncenter format: https://testnet.toncenter.com/api/v2
@@ -41,6 +104,25 @@ export function normalizeV2Endpoint(endpoint: string): string {
     // For v3 endpoints, convert to v2 base and add /jsonRPC
     if (normalized.endsWith('/api/v3')) {
         return normalized.replace('/api/v3', '/api/v2/jsonRPC');
+    }
+
+    // QuickNode and GetBlock: base URLs need /jsonRPC appended
+    // QuickNode: https://{key}.ton-mainnet.quiknode.pro/ -> .../jsonRPC
+    // GetBlock: https://go.getblock.io/{key}/ -> .../jsonRPC
+    if (normalized.includes('quiknode.pro') || normalized.includes('getblock.io')) {
+        try {
+            const url = new URL(normalized);
+            if (!url.pathname || url.pathname === '/') {
+                return normalized + '/jsonRPC';
+            }
+            // If pathname exists but doesn't end with /jsonRPC, append it
+            if (!url.pathname.toLowerCase().endsWith('/jsonrpc')) {
+                return normalized + '/jsonRPC';
+            }
+        } catch {
+            // Not a valid URL, try simple append
+            return normalized + '/jsonRPC';
+        }
     }
 
     // If it looks like a base URL without path, append /jsonRPC
@@ -92,7 +174,7 @@ export function toV2Base(endpoint: string): string {
  * Convert any endpoint to v3 base URL.
  */
 export function toV3Base(endpoint: string): string {
-    let normalized = toV2Base(endpoint);
+    const normalized = toV2Base(endpoint);
     return normalized.replace('/api/v2', '/api/v3');
 }
 

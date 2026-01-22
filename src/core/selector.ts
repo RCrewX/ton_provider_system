@@ -119,7 +119,13 @@ export class ProviderSelector {
             const health = this.healthChecker.getResult(cachedBestId, network);
 
             // Verify cached provider is still healthy
-            if (cached && health && this.config.minStatus.includes(health.status)) {
+            // CRITICAL: Must check success: false first - never use failed providers
+            if (
+                cached &&
+                health &&
+                health.success !== false &&
+                this.config.minStatus.includes(health.status)
+            ) {
                 return cached;
             }
         }
@@ -149,19 +155,50 @@ export class ProviderSelector {
 
         if (scored.length === 0) {
             // Fall back to default order if no healthy providers
+            // But only if the default provider hasn't been tested or has success: true
             const defaults = this.registry.getDefaultOrderForNetwork(network);
-            if (defaults.length > 0) {
-                this.logger.warn(`No healthy providers for ${network}, using first default`);
-                return defaults[0];
+            for (const defaultProvider of defaults) {
+                const health = this.healthChecker.getResult(defaultProvider.id, network);
+                // Only use default if it hasn't been tested (untested) or if it succeeded
+                if (!health || health.status === 'untested' || health.success === true) {
+                    this.logger.warn(
+                        `No healthy providers for ${network}, using default: ${defaultProvider.id}`
+                    );
+                    return defaultProvider;
+                }
             }
-            return providers[0];
+            
+            // If all defaults failed, try any untested provider
+            for (const provider of providers) {
+                const health = this.healthChecker.getResult(provider.id, network);
+                if (!health || health.status === 'untested') {
+                    this.logger.warn(
+                        `No tested healthy providers for ${network}, using untested: ${provider.id}`
+                    );
+                    return provider;
+                }
+            }
+            
+            // Last resort: return null (caller should handle this)
+            this.logger.error(`No available providers for ${network} (all tested and failed)`);
+            return null;
         }
 
         const best = scored[0].provider;
-        this.bestProviderByNetwork.set(network, best.id);
-        this.logger.debug(
-            `Best provider for ${network}: ${best.id} (score: ${scored[0].score.toFixed(2)})`
-        );
+        const bestHealth = this.healthChecker.getResult(best.id, network);
+        
+        // Only cache and log if provider has been tested and is healthy
+        if (bestHealth && bestHealth.success === true) {
+            this.bestProviderByNetwork.set(network, best.id);
+            this.logger.debug(
+                `Best provider for ${network}: ${best.id} (score: ${scored[0].score.toFixed(2)})`
+            );
+        } else {
+            // Don't cache untested providers, but still return them as fallback
+            this.logger.debug(
+                `Best provider for ${network}: ${best.id} (score: ${scored[0].score.toFixed(2)}, untested)`
+            );
+        }
 
         return best;
     }
@@ -217,9 +254,10 @@ export class ProviderSelector {
     private scoreProvider(provider: ResolvedProvider, network: Network): number {
         const health = this.healthChecker.getResult(provider.id, network);
 
-        // No health data = untested = low score but not zero
+        // No health data = untested = very low score (only used as last resort)
+        // Prefer tested providers even if they're degraded over untested ones
         if (!health || health.status === 'untested') {
-            return 0.1 * (1 / (provider.priority + 1));
+            return 0.01 * (1 / (provider.priority + 1));
         }
 
         // Providers that failed health check should not be selected

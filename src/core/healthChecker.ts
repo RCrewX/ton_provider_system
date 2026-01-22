@@ -16,6 +16,7 @@ import type {
     TimeoutError,
 } from '../types';
 import { normalizeV2Endpoint } from '../utils/endpoint';
+import type { RateLimiterManager } from './rateLimiter';
 
 // ============================================================================
 // Console Logger (default)
@@ -62,10 +63,23 @@ export class HealthChecker {
     private logger: Logger;
     private results: Map<string, ProviderHealthResult> = new Map();
     private highestSeqno: Map<Network, number> = new Map();
+    private rateLimiter: RateLimiterManager | null = null;
 
-    constructor(config?: Partial<HealthCheckConfig>, logger?: Logger) {
+    constructor(
+        config?: Partial<HealthCheckConfig>,
+        logger?: Logger,
+        rateLimiter?: RateLimiterManager
+    ) {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.logger = logger || consoleLogger;
+        this.rateLimiter = rateLimiter || null;
+    }
+
+    /**
+     * Set rate limiter (can be set after construction)
+     */
+    setRateLimiter(rateLimiter: RateLimiterManager | null): void {
+        this.rateLimiter = rateLimiter;
     }
 
     /**
@@ -89,23 +103,66 @@ export class HealthChecker {
         this.results.set(key, testingResult);
 
         try {
+            // Acquire rate limit token if rate limiter is available
+            if (this.rateLimiter) {
+                const acquired = await this.rateLimiter.acquire(provider.id, this.config.timeoutMs);
+                if (!acquired) {
+                    throw new Error('Rate limit timeout - unable to acquire token for health check');
+                }
+            }
+
             // Get endpoint URL
             const endpoint = await this.getEndpoint(provider);
             if (!endpoint) {
                 throw new Error('No valid endpoint available');
             }
 
-            // Normalize endpoint for v2 API
-            const normalizedEndpoint = normalizeV2Endpoint(endpoint);
+            // Check for required API keys
+            if (provider.type === 'tatum' && !provider.apiKey) {
+                throw new Error('Tatum provider requires API key (set TATUM_API_KEY_TESTNET or TATUM_API_KEY_MAINNET)');
+            }
 
-            // Call getMasterchainInfo
-            const info = await this.callGetMasterchainInfo(normalizedEndpoint);
+            // Normalize endpoint for v2 API (provider-specific handling)
+            let normalizedEndpoint = this.normalizeEndpointForProvider(provider, endpoint);
+            
+            // Debug logging for OnFinality
+            if (provider.type === 'onfinality') {
+                this.logger.debug(`OnFinality endpoint: ${endpoint} -> ${normalizedEndpoint}, API key: ${provider.apiKey ? 'set' : 'not set'}`);
+            }
+
+            // Call getMasterchainInfo with provider-specific handling
+            // For OnFinality, if /rpc fails, it will automatically retry with /public
+            let info: MasterchainInfo;
+            try {
+                info = await this.callGetMasterchainInfo(normalizedEndpoint, provider);
+            } catch (error: any) {
+                // If OnFinality /rpc fails with backend error and we have an API key, try /public
+                if (
+                    provider.type === 'onfinality' &&
+                    normalizedEndpoint.includes('/rpc') &&
+                    provider.apiKey &&
+                    error.message?.includes('backend error')
+                ) {
+                    this.logger.debug(`OnFinality /rpc failed, retrying with /public endpoint`);
+                    const publicEndpoint = normalizedEndpoint.replace('/rpc', '/public');
+                    info = await this.callGetMasterchainInfo(publicEndpoint, { ...provider, apiKey: undefined });
+                } else {
+                    throw error;
+                }
+            }
 
             const endTime = performance.now();
             const latencyMs = Math.round(endTime - startTime);
 
-            // Extract seqno
-            const seqno = info.last?.seqno || 0;
+            // Extract seqno - validate it's a valid block number
+            const infoWithLast = info as { last?: { seqno?: number } };
+            const seqno = infoWithLast.last?.seqno;
+            
+            // seqno must be a positive integer (blocks start from 1)
+            // seqno=0 or undefined means invalid/malformed response
+            if (!seqno || seqno <= 0 || !Number.isInteger(seqno)) {
+                throw new Error('Invalid seqno in response (must be positive integer)');
+            }
 
             // Update highest known seqno for this network
             const currentHighest = this.highestSeqno.get(provider.network) || 0;
@@ -151,14 +208,20 @@ export class HealthChecker {
             // Detect specific HTTP status codes
             const is429 = errorMsg.includes('429') || errorMsg.toLowerCase().includes('rate limit');
             const is404 = errorMsg.includes('404') || errorMsg.toLowerCase().includes('not found');
+            const is503 = errorMsg.includes('503') || errorMsg.toLowerCase().includes('service unavailable');
+            const is502 = errorMsg.includes('502') || errorMsg.toLowerCase().includes('bad gateway');
             const isTimeout = error.name === 'AbortError' || errorMsg.includes('timeout');
+            
+            // Detect OnFinality backend errors
+            const isOnFinalityBackendError = provider.type === 'onfinality' && 
+                (errorMsg.includes('Backend error') || errorMsg.includes('backend error'));
 
             // Determine status based on error type
             let status: ProviderStatus = 'offline';
             if (is429) {
                 status = 'degraded';
-            } else if (is404) {
-                status = 'offline'; // 404 means endpoint doesn't exist
+            } else if (is404 || is503 || is502 || isOnFinalityBackendError) {
+                status = 'offline'; // Service unavailable or backend errors
             } else if (isTimeout) {
                 status = 'offline';
             }
@@ -184,11 +247,14 @@ export class HealthChecker {
 
     /**
      * Test multiple providers in parallel with staggered batches
+     * 
+     * @param batchSize - Number of providers to test in parallel (default: 2)
+     * @param batchDelayMs - Delay between batches in milliseconds (default: 500 to avoid rate limits)
      */
     async testProviders(
         providers: ResolvedProvider[],
         batchSize: number = 2,
-        batchDelayMs: number = 300
+        batchDelayMs: number = 500
     ): Promise<ProviderHealthResult[]> {
         const results: ProviderHealthResult[] = [];
 
@@ -327,16 +393,54 @@ export class HealthChecker {
     }
 
     /**
-     * Call getMasterchainInfo API
+     * Normalize endpoint for provider-specific requirements
+     * 
+     * Note: normalizeV2Endpoint now handles all provider-specific cases correctly,
+     * including Tatum (/jsonRPC), OnFinality (/public or /rpc), QuickNode, and GetBlock.
      */
-    private async callGetMasterchainInfo(endpoint: string): Promise<MasterchainInfo> {
+    private normalizeEndpointForProvider(provider: ResolvedProvider, endpoint: string): string {
+        // Handle legacy Tatum API format conversion (if needed)
+        if (provider.type === 'tatum' && endpoint.includes('api.tatum.io/v3/blockchain/node')) {
+            const network = provider.network === 'testnet' ? 'testnet' : 'mainnet';
+            endpoint = `https://ton-${network}.gateway.tatum.io`;
+        }
+        
+        // Use the unified normalization function which handles all providers correctly
+        return normalizeV2Endpoint(endpoint);
+    }
+
+    /**
+     * Call getMasterchainInfo API with provider-specific handling
+     */
+    private async callGetMasterchainInfo(
+        endpoint: string,
+        provider: ResolvedProvider
+    ): Promise<MasterchainInfo> {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
+
+        // Build headers with provider-specific API key handling
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+        };
+
+        // Tatum requires API key in x-api-key header
+        if (provider.type === 'tatum' && provider.apiKey) {
+            headers['x-api-key'] = provider.apiKey;
+        }
+
+        // OnFinality supports API key in header (preferred) or query params
+        // Use header method to avoid query string issues
+        if (provider.type === 'onfinality' && provider.apiKey) {
+            headers['apikey'] = provider.apiKey;
+        }
+
+        // Other providers (TonCenter, Chainstack) use apiKey in TonClient, not in health check
 
         try {
             const response = await fetch(endpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({
                     id: '1',
                     jsonrpc: '2.0',
@@ -348,26 +452,99 @@ export class HealthChecker {
 
             clearTimeout(timeoutId);
 
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
+            // Check content type before parsing
+            const contentType = response.headers.get('content-type') || '';
+            let text: string | null = null;
+            let data: unknown;
 
-            const data = await response.json();
-
-            // Handle wrapped response { ok: true, result: ... }
-            if (data && typeof data === 'object' && 'ok' in data) {
-                if (!data.ok) {
-                    throw new Error(data.error || 'API returned ok=false');
+            // Read response as text first to check for errors
+            if (!contentType.includes('application/json')) {
+                text = await response.text();
+                
+                // For non-JSON responses, throw error (fallback will be handled at higher level)
+                this.logger.debug(`${provider.type} non-JSON response (${contentType}): ${text.substring(0, 200)}`);
+                
+                // Special error message for OnFinality backend errors
+                if (provider.type === 'onfinality' && text.includes('Backend error')) {
+                    throw new Error(`OnFinality backend error: ${text}`);
                 }
-                return (data.result || data) as MasterchainInfo;
+                
+                throw new Error(`Invalid response type: expected JSON, got ${contentType}. Response: ${text.substring(0, 100)}`);
             }
 
-            // Handle JSON-RPC response { result: ... }
-            if (data.result) {
-                return data.result as MasterchainInfo;
+            // Parse JSON response
+            if (!response.ok) {
+                // Try to parse error response as JSON first
+                try {
+                    data = await response.json();
+                    const errorObj = data as { error?: { message?: string; code?: number } | string };
+                    const errorMsg = typeof errorObj.error === 'string' 
+                        ? errorObj.error 
+                        : errorObj.error?.message || `HTTP ${response.status}`;
+                    throw new Error(errorMsg);
+                } catch {
+                    throw new Error(`HTTP ${response.status}`);
+                }
             }
 
-            return data as MasterchainInfo;
+            data = await response.json();
+
+            let info: MasterchainInfo;
+
+            // Handle different response formats
+            if (data && typeof data === 'object') {
+                const dataObj = data as Record<string, unknown>;
+                
+                // Handle wrapped response { ok: true, result: ... } (GetBlock, some providers)
+                if ('ok' in dataObj) {
+                    if (!dataObj.ok) {
+                        const error = (dataObj as { error?: string }).error;
+                        throw new Error(error || 'API returned ok=false');
+                    }
+                    const result = (dataObj as { result?: unknown }).result;
+                    info = (result || dataObj) as MasterchainInfo;
+                }
+                // Handle JSON-RPC response { result: ... } (standard JSON-RPC)
+                else if ('result' in dataObj) {
+                    info = (dataObj as { result: unknown }).result as MasterchainInfo;
+                }
+                // Handle direct response (some providers return data directly)
+                else if ('last' in dataObj || '@type' in dataObj) {
+                    info = dataObj as unknown as MasterchainInfo;
+                }
+                // Handle error response { error: ... }
+                else if ('error' in dataObj) {
+                    const errorObj = dataObj.error as { message?: string; code?: string } | string;
+                    const errorMsg = typeof errorObj === 'string' 
+                        ? errorObj 
+                        : errorObj?.message || errorObj?.code || String(errorObj);
+                    throw new Error(`API error: ${errorMsg}`);
+                }
+                // Unknown format
+                else {
+                    throw new Error(`Unknown response format from ${provider.type}`);
+                }
+            } else {
+                throw new Error(`Invalid response type: ${typeof data}`);
+            }
+
+            // Validate response structure
+            if (!info || typeof info !== 'object') {
+                // Log the actual response for debugging
+                this.logger.debug(`Invalid response structure from ${provider.type}: ${JSON.stringify(data)}`);
+                throw new Error('Invalid response structure');
+            }
+
+            // Validate seqno exists and is valid (blocks start from 1)
+            const infoObj = info as { last?: { seqno?: number } };
+            const seqno = infoObj.last?.seqno;
+            if (seqno === undefined || seqno === null || seqno <= 0 || !Number.isInteger(seqno)) {
+                // Log the actual response for debugging
+                this.logger.debug(`Invalid seqno from ${provider.type}:`, { seqno, info });
+                throw new Error(`Invalid seqno: ${seqno} (must be positive integer)`);
+            }
+
+            return info;
         } catch (error: any) {
             clearTimeout(timeoutId);
             throw error;
@@ -388,7 +565,8 @@ export class HealthChecker {
  */
 export function createHealthChecker(
     config?: Partial<HealthCheckConfig>,
-    logger?: Logger
+    logger?: Logger,
+    rateLimiter?: RateLimiterManager
 ): HealthChecker {
-    return new HealthChecker(config, logger);
+    return new HealthChecker(config, logger, rateLimiter);
 }

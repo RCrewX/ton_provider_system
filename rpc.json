@@ -16,20 +16,6 @@
       "enabled": true,
       "description": "Chainstack testnet API - 25 RPS free plan"
     },
-    "chainstack_mainnet": {
-      "name": "Chainstack Mainnet",
-      "type": "chainstack",
-      "network": "mainnet",
-      "endpoints": {
-        "v2": "https://ton-mainnet.core.chainstack.com/{key}/api/v2",
-        "v3": "https://ton-mainnet.core.chainstack.com/{key}/api/v3"
-      },
-      "keyEnvVar": "CHAINSTACK_KEY_MAINNET",
-      "rps": 25,
-      "priority": 1,
-      "enabled": true,
-      "description": "Chainstack mainnet API - 25 RPS free plan"
-    },
     "toncenter_testnet": {
       "name": "TON Center Testnet",
       "type": "toncenter",
@@ -67,7 +53,7 @@
       "rps": 15,
       "priority": 2,
       "enabled": true,
-      "description": "QuickNode mainnet - 15 RPS free plan"
+      "description": "QuickNode mainnet - 15 RPS free plan. Endpoint automatically appends /jsonRPC for JSON-RPC requests."
     },
     "getblock_mainnet": {
       "name": "GetBlock Mainnet",
@@ -80,7 +66,7 @@
       "rps": 20,
       "priority": 3,
       "enabled": true,
-      "description": "GetBlock mainnet API - 20 RPS"
+      "description": "GetBlock mainnet API - 20 RPS. Endpoint automatically appends /jsonRPC for JSON-RPC requests."
     },
     "onfinality_testnet": {
       "name": "OnFinality Testnet",
@@ -94,33 +80,33 @@
       "rps": 4,
       "priority": 5,
       "enabled": true,
-      "description": "OnFinality testnet - 4 RPS free tier"
+      "description": "OnFinality testnet - 4 RPS free tier. Uses /rpc endpoint with API key in header (apikey header). If no API key is set, falls back to /public endpoint (rate-limited). Query params in URL are automatically removed."
     },
     "tatum_testnet": {
       "name": "Tatum Testnet",
       "type": "tatum",
       "network": "testnet",
       "endpoints": {
-        "v2": "https://api.tatum.io/v3/blockchain/node/ton-testnet"
+        "v2": "https://ton-testnet.gateway.tatum.io"
       },
       "apiKeyEnvVar": "TATUM_API_KEY_TESTNET",
       "rps": 3,
       "priority": 8,
       "enabled": true,
-      "description": "Tatum testnet API - 3 RPS free plan"
+      "description": "Tatum testnet gateway - 3 RPS free plan. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_TESTNET."
     },
     "tatum_mainnet": {
       "name": "Tatum Mainnet",
       "type": "tatum",
       "network": "mainnet",
       "endpoints": {
-        "v2": "https://api.tatum.io/v3/blockchain/node/ton-mainnet"
+        "v2": "https://ton-mainnet.gateway.tatum.io"
       },
       "apiKeyEnvVar": "TATUM_API_KEY_MAINNET",
       "rps": 3,
       "priority": 8,
       "enabled": true,
-      "description": "Tatum mainnet API - 3 RPS free plan"
+      "description": "Tatum mainnet gateway - 3 RPS free plan. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_MAINNET."
     },
     "orbs_testnet": {
       "name": "Orbs TON Access Testnet",
@@ -158,7 +144,6 @@
       "orbs_testnet"
     ],
     "mainnet": [
-      "chainstack_mainnet",
       "quicknode_mainnet",
       "getblock_mainnet",
       "toncenter_mainnet",

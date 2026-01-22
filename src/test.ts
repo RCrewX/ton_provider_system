@@ -35,6 +35,7 @@ import {
     createHealthChecker,
     RateLimiterManager,
     createRateLimiterManager,
+    getRateLimitForType,
     ProviderSelector,
     createSelector,
     ProviderManager,
@@ -239,43 +240,157 @@ async function testHealthChecker(network: Network): Promise<void> {
         }
     });
 
-    await runTest('Test multiple providers', async () => {
+    await runTest('Test multiple providers with rate limiting', async () => {
         const registry = await createRegistry();
-        const checker = createHealthChecker({ timeoutMs: 10000 });
-        const providers = registry.getProvidersForNetwork(network).slice(0, 3); // Test max 3
-
+        const rateLimiter = createRateLimiterManager();
+        
+        // Configure rate limiters for providers
+        const providers = registry.getProvidersForNetwork(network).slice(0, 3);
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
         }
-
-        const results = await checker.testProviders(providers, 2, 100);
+        
+        for (const provider of providers) {
+            const config = getRateLimitForType(provider.type);
+            rateLimiter.setConfig(provider.id, {
+                ...config,
+                rps: provider.rps,
+                minDelayMs: Math.ceil(1000 / provider.rps),
+            });
+        }
+        
+        const checker = createHealthChecker({ timeoutMs: 15000 }, undefined, rateLimiter);
+        
+        // Use larger batch delay to respect rate limits
+        const results = await checker.testProviders(providers, 1, 1000);
         const successful = results.filter(r => r.success);
+        const failed = results.filter(r => !r.success);
 
-        logVerbose(`Tested ${results.length} providers, ${successful.length} successful`);
-
+        logVerbose(`\n📊 Provider Test Results (${results.length} providers):`);
+        logVerbose(`  ✓ Successful: ${successful.length}`);
+        logVerbose(`  ✗ Failed: ${failed.length}`);
+        logVerbose(`\n📋 Detailed Results:\n`);
+        
         for (const r of results) {
-            logVerbose(`  ${r.id}: ${r.status} (${r.latencyMs || 'N/A'}ms)`);
+            const provider = registry.getProvider(r.id);
+            const statusIcon = r.success ? '✓' : '✗';
+            const statusColor = r.success 
+                ? (r.status === 'available' ? '🟢' : r.status === 'degraded' ? '🟡' : '🟠')
+                : '🔴';
+            
+            logVerbose(`  ${statusIcon} ${statusColor} ${r.id} (${provider?.name || 'Unknown'})`);
+            logVerbose(`     Type: ${provider?.type || 'unknown'}`);
+            logVerbose(`     Status: ${r.status}`);
+            logVerbose(`     Success: ${r.success ? 'Yes' : 'No'}`);
+            
+            if (r.success) {
+                logVerbose(`     Latency: ${r.latencyMs || 'N/A'}ms`);
+                logVerbose(`     Seqno: ${r.seqno || 'N/A'}`);
+                logVerbose(`     Blocks behind: ${r.blocksBehind || 0}`);
+                if (r.cachedEndpoint) {
+                    logVerbose(`     Endpoint: ${r.cachedEndpoint}`);
+                }
+            } else {
+                logVerbose(`     Error: ${r.error || 'Unknown error'}`);
+                if (r.latencyMs) {
+                    logVerbose(`     Latency (before error): ${r.latencyMs}ms`);
+                }
+            }
+            
+            // Show API key status
+            if (provider) {
+                const hasApiKey = provider.apiKey ? 'Yes' : 'No';
+                const apiKeyRequired = provider.type === 'tatum' || provider.type === 'onfinality' 
+                    ? ' (Required)' : ' (Optional)';
+                logVerbose(`     API Key: ${hasApiKey}${apiKeyRequired}`);
+            }
+            
+            logVerbose(``);
+        }
+        
+        // Verify rate limiting worked (no 429 errors if rate limiter is used)
+        const rateLimitErrors = failed.filter(r => r.error?.includes('429'));
+        if (rateLimitErrors.length > 0 && rateLimiter) {
+            logVerbose(`  ⚠ Rate limit errors: ${rateLimitErrors.length} (rate limiter should prevent these)`);
         }
     });
 
-    await runTest('Get best provider', async () => {
+    await runTest('Get best provider with detailed analysis', async () => {
         const registry = await createRegistry();
         const checker = createHealthChecker({ timeoutMs: 10000 });
-        const providers = registry.getProvidersForNetwork(network).slice(0, 2);
+        const providers = registry.getProvidersForNetwork(network).slice(0, 3);
 
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
         }
 
-        await checker.testProviders(providers);
+        logVerbose(`Testing ${providers.length} providers to find best...`);
+        const results = await checker.testProviders(providers, 1, 500);
+        
+        // Analyze results
+        const successful = results.filter(r => r.success);
+        const failed = results.filter(r => !r.success);
+        
+        logVerbose(`\n📊 Test Results:`);
+        logVerbose(`  ✓ Successful: ${successful.length}`);
+        logVerbose(`  ✗ Failed: ${failed.length}`);
+        logVerbose(`\n📋 Detailed Results:\n`);
+        for (const r of results) {
+            const provider = registry.getProvider(r.id);
+            const statusIcon = r.success ? '✓' : '✗';
+            const statusColor = r.success 
+                ? (r.status === 'available' ? '🟢' : r.status === 'degraded' ? '🟡' : '🟠')
+                : '🔴';
+            
+            logVerbose(`  ${statusIcon} ${statusColor} ${r.id} (${provider?.name || 'Unknown'})`);
+            logVerbose(`     Type: ${provider?.type || 'unknown'}`);
+            logVerbose(`     Status: ${r.status}`);
+            logVerbose(`     Success: ${r.success ? 'Yes' : 'No'}`);
+            
+            if (r.success) {
+                logVerbose(`     Latency: ${r.latencyMs || 'N/A'}ms`);
+                logVerbose(`     Seqno: ${r.seqno || 'N/A'}`);
+                logVerbose(`     Blocks behind: ${r.blocksBehind || 0}`);
+                if (r.cachedEndpoint) {
+                    logVerbose(`     Endpoint: ${r.cachedEndpoint}`);
+                }
+            } else {
+                logVerbose(`     Error: ${r.error || 'Unknown error'}`);
+                if (r.latencyMs) {
+                    logVerbose(`     Latency (before error): ${r.latencyMs}ms`);
+                }
+            }
+            
+            if (provider) {
+                const hasApiKey = provider.apiKey ? 'Yes' : 'No';
+                const apiKeyRequired = provider.type === 'tatum' || provider.type === 'onfinality' 
+                    ? ' (Required)' : ' (Optional)';
+                logVerbose(`     API Key: ${hasApiKey}${apiKeyRequired}`);
+            }
+            
+            logVerbose(``);
+        }
+        
         const best = checker.getBestProvider(network);
-
         if (best) {
-            logVerbose(`Best provider: ${best.id} (${best.latencyMs}ms)`);
+            const bestHealth = checker.getResult(best.id, network);
+            const bestProvider = registry.getProvider(best.id);
+            logVerbose(`\n🏆 Best Provider Selected:\n`);
+            logVerbose(`  🟢 ${best.id} (${bestProvider?.name || 'Unknown'})`);
+            logVerbose(`     Type: ${bestProvider?.type || 'unknown'}`);
+            if (bestHealth) {
+                logVerbose(`     Status: ${bestHealth.status}`);
+                logVerbose(`     Latency: ${bestHealth.latencyMs || 'N/A'}ms`);
+                logVerbose(`     Seqno: ${bestHealth.seqno || 'N/A'}`);
+                logVerbose(`     Blocks behind: ${bestHealth.blocksBehind || 0}`);
+                if (bestHealth.cachedEndpoint) {
+                    logVerbose(`     Endpoint: ${bestHealth.cachedEndpoint}`);
+                }
+            }
         } else {
-            logVerbose('No available provider found');
+            logVerbose(`\n⚠️  No available provider found (all failed or untested)`);
         }
     });
 
@@ -390,24 +505,59 @@ async function testProviderSelector(network: Network): Promise<void> {
         assert(selector instanceof ProviderSelector, 'Should be ProviderSelector');
     });
 
-    await runTest('Select best provider', async () => {
+    await runTest('Select best provider with scoring details', async () => {
         const registry = await createRegistry();
         const checker = createHealthChecker({ timeoutMs: 10000 });
         const selector = createSelector(registry, checker);
 
         // Test some providers first
-        const providers = registry.getProvidersForNetwork(network).slice(0, 2);
+        const providers = registry.getProvidersForNetwork(network).slice(0, 3);
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
         }
 
-        await checker.testProviders(providers);
+        logVerbose(`Testing ${providers.length} providers...`);
+        await checker.testProviders(providers, 1, 500);
+        
+        // Get all available providers with scores
+        const available = selector.getAvailableProviders(network);
+        logVerbose(`\n📊 Available Providers (${available.length}):\n`);
+        for (const provider of available) {
+            const health = checker.getResult(provider.id, network);
+            if (health) {
+                const statusColor = health.status === 'available' ? '🟢' : health.status === 'degraded' ? '🟡' : '🟠';
+                logVerbose(`  ${statusColor} ${provider.id} (${provider.name})`);
+                logVerbose(`     Type: ${provider.type}`);
+                logVerbose(`     Status: ${health.status}`);
+                logVerbose(`     Latency: ${health.latencyMs || 'N/A'}ms`);
+                logVerbose(`     Seqno: ${health.seqno || 'N/A'}`);
+                logVerbose(`     Blocks behind: ${health.blocksBehind || 0}`);
+                if (health.cachedEndpoint) {
+                    logVerbose(`     Endpoint: ${health.cachedEndpoint}`);
+                }
+                if (health.lastTested) {
+                    logVerbose(`     Last tested: ${health.lastTested.toISOString()}`);
+                }
+                logVerbose(``);
+            }
+        }
+        
         selector.updateBestProvider(network);
-
         const best = selector.getBestProvider(network);
+        
         if (best) {
-            logVerbose(`Selected: ${best.id} (${best.name})`);
+            const bestHealth = checker.getResult(best.id, network);
+            logVerbose(`\nSelected best: ${best.id} (${best.name})`);
+            if (bestHealth) {
+                logVerbose(`  Status: ${bestHealth.status}`);
+                logVerbose(`  Success: ${bestHealth.success}`);
+                logVerbose(`  Latency: ${bestHealth.latencyMs}ms`);
+                logVerbose(`  Seqno: ${bestHealth.seqno}`);
+                logVerbose(`  Blocks behind: ${bestHealth.blocksBehind}`);
+            }
+        } else {
+            logVerbose(`\nNo provider selected (all failed or untested)`);
         }
     });
 
@@ -460,40 +610,68 @@ async function testProviderSelector(network: Network): Promise<void> {
             return;
         }
 
-        // Manually mark a provider as failed (success: false, status: degraded)
+        // Test with real health checks first
+        logVerbose('Testing providers to get real health data...');
+        await checker.testProviders(providers.slice(0, 2), 1, 500);
+        
+        // Manually mark a provider as failed (success: false)
         const testProvider = providers[0];
-        checker.markDegraded(testProvider.id, network, 'HTTP 429 Rate Limit');
-
-        // Get the health result and manually set success: false
-        const health = checker.getResult(testProvider.id, network);
-        if (health) {
-            // Create a failed health result
-            const failedHealth: ProviderHealthResult = {
-                ...health,
-                success: false,
-                status: 'degraded',
-                error: 'HTTP 429 Rate Limit',
-            };
-            // Note: We can't directly set this, but we can verify the selector behavior
-            // The selector should check health.success === false and return score 0
+        checker.markOffline(testProvider.id, network, 'HTTP 503 Service Unavailable');
+        
+        const failedHealth = checker.getResult(testProvider.id, network);
+        if (failedHealth) {
+        const provider = registry.getProvider(testProvider.id);
+        logVerbose(`\n📋 Provider Failure Test:\n`);
+        logVerbose(`  Provider: ${testProvider.id} (${provider?.name || 'Unknown'})`);
+        logVerbose(`  Type: ${provider?.type || 'unknown'}`);
+        logVerbose(`  Marked as failed:`);
+        logVerbose(`    Status: ${failedHealth.status}`);
+        logVerbose(`    Success: ${failedHealth.success}`);
+        logVerbose(`    Error: ${failedHealth.error}`);
         }
 
         // The selector should not select providers with success: false
-        // This is tested implicitly - if a provider has success: false, it gets score 0
-        // and won't be selected by getBestProvider
         const available = selector.getAvailableProviders(network);
-        logVerbose(`Available providers: ${available.length}`);
+        logVerbose(`\nAvailable providers (should exclude failed): ${available.length}`);
         
-        // If all providers are failed, selector should handle gracefully
+        // Verify failed provider is not in available list
+        const failedInAvailable = available.find(p => p.id === testProvider.id);
+        if (failedInAvailable) {
+            throw new Error(`Failed provider ${testProvider.id} should not be in available list`);
+        }
+        logVerbose(`✓ Failed provider correctly excluded from available list`);
+        
+        // Test best provider selection
         const best = selector.getBestProvider(network);
         if (best) {
-            // If a provider is selected, verify it's not the failed one
-            // (or that it has success: true)
             const bestHealth = checker.getResult(best.id, network);
+            const bestProvider = registry.getProvider(best.id);
             if (bestHealth) {
-                // Best provider should have success: true (if health check was done)
-                logVerbose(`Best provider ${best.id} has success: ${bestHealth.success}`);
+                logVerbose(`\n🏆 Best Provider Selected:\n`);
+                logVerbose(`  🟢 ${best.id} (${bestProvider?.name || 'Unknown'})`);
+                logVerbose(`     Type: ${bestProvider?.type || 'unknown'}`);
+                logVerbose(`     Success: ${bestHealth.success}`);
+                logVerbose(`     Status: ${bestHealth.status}`);
+                if (bestHealth.latencyMs) {
+                    logVerbose(`     Latency: ${bestHealth.latencyMs}ms`);
+                }
+                if (bestHealth.seqno) {
+                    logVerbose(`     Seqno: ${bestHealth.seqno}`);
+                }
+                
+                // Verify best provider is not the failed one
+                if (best.id === testProvider.id) {
+                    throw new Error(`Best provider should not be the failed provider ${testProvider.id}`);
+                }
+                logVerbose(`\n  ✓ Best provider is not the failed provider`);
+                
+                // If health check was done, it should have success: true
+                if (bestHealth.status !== 'untested' && !bestHealth.success) {
+                    logVerbose(`  ⚠ Warning: Best provider has success: false (unexpected)`);
+                }
             }
+        } else {
+            logVerbose(`\n⚠️  No provider selected (all failed or untested - this is valid)`);
         }
     });
 }
@@ -512,14 +690,105 @@ async function testProviderManager(network: Network): Promise<void> {
         assertEqual(pm.getNetwork(), network, 'Network');
     });
 
-    await runTest('Test providers via manager', async () => {
+    await runTest('Test providers via manager with detailed analysis', async () => {
         const pm = new ProviderManager({});
         await pm.init(network, false);
 
+        logVerbose('Testing all providers...');
+        const startTime = performance.now();
         const results = await pm.testAllProviders();
+        const duration = Math.round(performance.now() - startTime);
+        
         const successful = results.filter(r => r.success);
+        const failed = results.filter(r => !r.success);
+        const byStatus = {
+            available: results.filter(r => r.status === 'available'),
+            degraded: results.filter(r => r.status === 'degraded'),
+            stale: results.filter(r => r.status === 'stale'),
+            offline: results.filter(r => r.status === 'offline'),
+        };
 
-        logVerbose(`Tested ${results.length}, ${successful.length} successful`);
+        const registry = pm['registry']!;
+        
+        logVerbose(`\n📊 Provider Test Results (${duration}ms):`);
+        logVerbose(`  Total tested: ${results.length}`);
+        logVerbose(`  ✓ Successful: ${successful.length}`);
+        logVerbose(`  ✗ Failed: ${failed.length}`);
+        logVerbose(`\n📈 Status Breakdown:`);
+        logVerbose(`  🟢 Available: ${byStatus.available.length}`);
+        logVerbose(`  🟡 Degraded: ${byStatus.degraded.length}`);
+        logVerbose(`  🟠 Stale: ${byStatus.stale.length}`);
+        logVerbose(`  🔴 Offline: ${byStatus.offline.length}`);
+        
+        logVerbose(`\n📋 Detailed Provider Information:\n`);
+        for (const r of results) {
+            const provider = registry.getProvider(r.id);
+            const icon = r.success ? '✓' : '✗';
+            const statusColor = r.success 
+                ? (r.status === 'available' ? '🟢' : r.status === 'degraded' ? '🟡' : '🟠')
+                : '🔴';
+            
+            logVerbose(`  ${icon} ${statusColor} ${r.id}`);
+            logVerbose(`     Name: ${provider?.name || 'Unknown'}`);
+            logVerbose(`     Type: ${provider?.type || 'unknown'}`);
+            logVerbose(`     Network: ${r.network}`);
+            logVerbose(`     Status: ${r.status}`);
+            logVerbose(`     Success: ${r.success ? 'Yes' : 'No'}`);
+            
+            if (r.success) {
+                logVerbose(`     Latency: ${r.latencyMs || 'N/A'}ms`);
+                logVerbose(`     Seqno: ${r.seqno || 'N/A'}`);
+                logVerbose(`     Blocks behind: ${r.blocksBehind || 0}`);
+                if (r.cachedEndpoint) {
+                    logVerbose(`     Endpoint: ${r.cachedEndpoint}`);
+                }
+                if (r.lastTested) {
+                    logVerbose(`     Last tested: ${r.lastTested.toISOString()}`);
+                }
+            } else {
+                logVerbose(`     Error: ${r.error || 'Unknown error'}`);
+                if (r.latencyMs) {
+                    logVerbose(`     Latency (before error): ${r.latencyMs}ms`);
+                }
+            }
+            
+            // Provider configuration info
+            if (provider) {
+                logVerbose(`     Priority: ${provider.priority}`);
+                logVerbose(`     RPS: ${provider.rps}`);
+                const hasApiKey = provider.apiKey ? 'Yes' : 'No';
+                const apiKeyRequired = provider.type === 'tatum' || provider.type === 'onfinality' 
+                    ? ' (Required)' : ' (Optional)';
+                logVerbose(`     API Key: ${hasApiKey}${apiKeyRequired}`);
+                if (provider.endpointV2) {
+                    logVerbose(`     Endpoint V2: ${provider.endpointV2}`);
+                }
+            }
+            
+            logVerbose(``);
+        }
+        
+        // Check for rate limiting issues
+        const rateLimitErrors = failed.filter(r => 
+            r.error?.includes('429') || r.error?.toLowerCase().includes('rate limit')
+        );
+        if (rateLimitErrors.length > 0) {
+            logVerbose(`\n⚠ Rate Limiting Issues:`);
+            logVerbose(`  Found ${rateLimitErrors.length} rate limit errors:`);
+            for (const r of rateLimitErrors) {
+                logVerbose(`    - ${r.id}: ${r.error}`);
+            }
+            logVerbose(`  Note: Rate limiter should prevent these. Check rate limit configuration.`);
+        }
+        
+        // Check for invalid seqno issues
+        const invalidSeqno = successful.filter(r => !r.seqno || r.seqno <= 0);
+        if (invalidSeqno.length > 0) {
+            logVerbose(`\n⚠ Invalid Seqno (should not happen):`);
+            for (const r of invalidSeqno) {
+                logVerbose(`    - ${r.id}: seqno=${r.seqno}`);
+            }
+        }
     });
 
     await runTest('Get endpoint', async () => {
@@ -621,6 +890,159 @@ async function testNodeAdapter(network: Network): Promise<void> {
     });
 }
 
+async function testEdgeCases(network: Network): Promise<void> {
+    log('\n=== Edge Cases & Error Handling Tests ===\n');
+
+    await runTest('Handle all providers failing', async () => {
+        const pm = new ProviderManager({});
+        await pm.init(network, false);
+        
+        // Manually mark all providers as failed
+        const providers = pm['registry']!.getProvidersForNetwork(network);
+        const checker = pm['healthChecker']!;
+        
+        for (const provider of providers) {
+            checker.markOffline(provider.id, network, 'Simulated failure');
+        }
+        
+        const selector = pm['selector']!;
+        selector.updateBestProvider(network);
+        
+        const best = selector.getBestProvider(network);
+        if (best) {
+            const health = checker.getResult(best.id, network);
+            const provider = pm['registry']!.getProvider(best.id);
+            logVerbose(`\n📋 Fallback Provider Selection:\n`);
+            logVerbose(`  Provider: ${best.id} (${provider?.name || 'Unknown'})`);
+            logVerbose(`  Type: ${provider?.type || 'unknown'}`);
+            if (health) {
+                logVerbose(`  Status: ${health.status}`);
+                logVerbose(`  Success: ${health.success}`);
+                logVerbose(`  Error: ${health.error || 'None'}`);
+            } else {
+                logVerbose(`  Health: Not tested (untested fallback)`);
+            }
+            
+            // Should fall back to untested provider or null
+            if (health && health.success === false) {
+                logVerbose(`  ⚠ Warning: Selected provider has success: false`);
+            }
+        } else {
+            logVerbose(`\n⚠️  No provider selected (all failed) - this is correct behavior`);
+        }
+    });
+
+    await runTest('Rate limiting during health checks', async () => {
+        const pm = new ProviderManager({});
+        await pm.init(network, false);
+        
+        const providers = pm['registry']!.getProvidersForNetwork(network).slice(0, 2);
+        if (providers.length === 0) {
+            logVerbose(`No providers for ${network}, skipping`);
+            return;
+        }
+        
+        logVerbose(`Testing ${providers.length} providers with rate limiting...`);
+        const startTime = performance.now();
+        const results = await pm.testAllProviders();
+        const duration = Math.round(performance.now() - startTime);
+        
+        const rateLimitErrors = results.filter(r => 
+            r.error?.includes('429') || r.error?.toLowerCase().includes('rate limit')
+        );
+        
+        logVerbose(`\n📊 Rate Limiting Test Results:\n`);
+        logVerbose(`  Test duration: ${duration}ms`);
+        logVerbose(`  Total providers tested: ${results.length}`);
+        logVerbose(`  Rate limit errors: ${rateLimitErrors.length}`);
+        
+        if (rateLimitErrors.length > 0) {
+            logVerbose(`\n  ⚠ Rate limit errors detected:`);
+            for (const r of rateLimitErrors) {
+                const provider = pm['registry']!.getProvider(r.id);
+                logVerbose(`    🔴 ${r.id} (${provider?.name || 'Unknown'})`);
+                logVerbose(`       Error: ${r.error}`);
+                logVerbose(`       Type: ${provider?.type || 'unknown'}`);
+                logVerbose(`       RPS limit: ${provider?.rps || 'N/A'}`);
+                logVerbose(``);
+            }
+            logVerbose(`  Note: Rate limiter should prevent most of these.`);
+        } else {
+            logVerbose(`  ✓ No rate limit errors (rate limiter working correctly)`);
+        }
+        
+        logVerbose(`\n  📋 All Provider Results:\n`);
+        for (const r of results) {
+            const provider = pm['registry']!.getProvider(r.id);
+            const statusIcon = r.success ? '✓' : '✗';
+            const statusColor = r.success 
+                ? (r.status === 'available' ? '🟢' : r.status === 'degraded' ? '🟡' : '🟠')
+                : '🔴';
+            
+            logVerbose(`    ${statusIcon} ${statusColor} ${r.id} (${provider?.name || 'Unknown'})`);
+            logVerbose(`       Status: ${r.status}`);
+            if (r.success) {
+                logVerbose(`       Latency: ${r.latencyMs}ms, Seqno: ${r.seqno}, Behind: ${r.blocksBehind}`);
+            } else {
+                logVerbose(`       Error: ${r.error?.substring(0, 60) || 'Unknown'}`);
+            }
+            logVerbose(``);
+        }
+    });
+
+    await runTest('Provider failover scenario', async () => {
+        const pm = new ProviderManager({});
+        await pm.init(network, true);
+        
+        const selector = pm['selector']!;
+        const checker = pm['healthChecker']!;
+        
+        // Get initial best provider
+        const initialBest = selector.getBestProvider(network);
+        if (!initialBest) {
+            logVerbose('No initial provider available, skipping failover test');
+            return;
+        }
+        
+        logVerbose(`Initial best provider: ${initialBest.id}`);
+        
+        // Simulate failure of best provider
+        checker.markOffline(initialBest.id, network, 'Simulated failure for failover test');
+        selector.handleProviderFailure(initialBest.id, network);
+        
+        // Get next best provider
+        const nextBest = selector.getBestProvider(network);
+        if (nextBest) {
+            const nextProvider = pm['registry']!.getProvider(nextBest.id);
+            const health = checker.getResult(nextBest.id, network);
+            
+            logVerbose(`\n🔄 Failover Result:\n`);
+            logVerbose(`  Next provider: ${nextBest.id} (${nextProvider?.name || 'Unknown'})`);
+            logVerbose(`  Type: ${nextProvider?.type || 'unknown'}`);
+            
+            if (nextBest.id === initialBest.id) {
+                logVerbose(`  ⚠ Warning: Same provider selected after failure`);
+            } else {
+                logVerbose(`  ✓ Failover successful: switched from ${initialBest.id} to ${nextBest.id}`);
+            }
+            
+            if (health) {
+                logVerbose(`\n  Health Status:`);
+                logVerbose(`    Status: ${health.status}`);
+                logVerbose(`    Success: ${health.success}`);
+                if (health.latencyMs) {
+                    logVerbose(`    Latency: ${health.latencyMs}ms`);
+                }
+                if (health.seqno) {
+                    logVerbose(`    Seqno: ${health.seqno}`);
+                }
+            }
+        } else {
+            logVerbose(`\n⚠️  No provider available after failover (all failed)`);
+        }
+    });
+}
+
 async function testEndpointUtils(): Promise<void> {
     log('\n=== Endpoint Utilities Tests ===\n');
 
@@ -700,6 +1122,9 @@ async function main(): Promise<void> {
             await testProviderSelector(network);
             await testProviderManager(network);
             await testNodeAdapter(network);
+            
+            // Additional comprehensive tests
+            await testEdgeCases(network);
         } else {
             log('\n=== Skipping network tests (--quick mode) ===\n');
         }
@@ -732,7 +1157,7 @@ async function main(): Promise<void> {
 }
 
 // Run if executed directly
-if (require.main === module) {
+if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('test.ts')) {
     main().catch(console.error);
 }
 

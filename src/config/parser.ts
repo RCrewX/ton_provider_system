@@ -98,8 +98,16 @@ export function resolveProvider(id: string, config: ProviderConfig): ResolvedPro
         return null;
     }
 
-    // Get API key if separate from URL
-    const apiKey = config.apiKeyEnvVar ? getEnvVar(config.apiKeyEnvVar) : undefined;
+    // Get API key - check both apiKeyEnvVar and keyEnvVar
+    // For OnFinality, the key is in keyEnvVar (used in URL), but we also need it in apiKey field
+    let apiKey = config.apiKeyEnvVar ? getEnvVar(config.apiKeyEnvVar) : undefined;
+    
+    // If no apiKeyEnvVar but keyEnvVar exists and was used, extract from resolved endpoint
+    if (!apiKey && config.keyEnvVar && config.type === 'onfinality') {
+        // For OnFinality, the API key might be in the resolved URL query params
+        // Try to get it from environment variable directly
+        apiKey = getEnvVar(config.keyEnvVar);
+    }
 
     return {
         id,
@@ -185,6 +193,21 @@ export async function loadBuiltinConfig(): Promise<RpcConfig> {
     // Dynamic import for Node.js modules
     const fs = await import('fs').then((m) => m.promises);
     const path = await import('path');
+    const { fileURLToPath } = await import('url');
+
+    // Get __dirname equivalent for ESM
+    const getDirname = () => {
+        try {
+            // ESM: use import.meta.url
+            if (import.meta.url) {
+                return path.dirname(fileURLToPath(import.meta.url));
+            }
+        } catch {
+            // Fallback for CommonJS (shouldn't happen in ESM)
+        }
+        return process.cwd();
+    };
+    const dirname = getDirname();
 
     // Find the rpc.json file - it's in the provider_system folder
     // Try multiple paths to handle different execution contexts
@@ -193,8 +216,8 @@ export async function loadBuiltinConfig(): Promise<RpcConfig> {
         path.resolve(process.cwd(), 'provider_system', RPC_CONFIG_FILENAME),
         // When running from provider_system folder
         path.resolve(process.cwd(), RPC_CONFIG_FILENAME),
-        // Relative to this file (CommonJS style)
-        path.resolve(__dirname, '..', RPC_CONFIG_FILENAME),
+        // Relative to this file (ESM style)
+        path.resolve(dirname, '..', RPC_CONFIG_FILENAME),
     ];
 
     for (const configPath of possiblePaths) {

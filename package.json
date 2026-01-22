@@ -1,6 +1,6 @@
 {
   "name": "ton-provider-system",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A bullet-proof TON RPC provider management system with automatic failover, health checking, and rate limiting",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -25,9 +25,9 @@
     "dev": "tsup --watch",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
-    "test": "ts-node src/test.ts",
-    "test:quick": "ts-node src/test.ts --quick",
-    "test:verbose": "ts-node src/test.ts --verbose",
+    "test": "tsx src/test.ts",
+    "test:quick": "tsx src/test.ts --quick",
+    "test:verbose": "tsx src/test.ts --verbose",
     "prepublishOnly": "pnpm build"
   },
   "keywords": [
@@ -62,6 +62,7 @@
     "eslint": "^9.39.2",
     "ts-node": "^10.9.2",
     "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.53.1"
   }

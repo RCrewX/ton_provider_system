@@ -185,6 +185,11 @@ export class TokenBucketRateLimiter {
             if (this.currentBackoff > 0) {
                 this.logger.debug(`Applying backoff: ${this.currentBackoff}ms`);
                 await sleep(this.currentBackoff);
+                // After backoff, reset lastRefill to ensure proper delay calculation
+                // This prevents getting tokens too quickly after backoff
+                this.lastRefill = Date.now();
+                // Clear backoff after applying it (it will be set again if we get another 429)
+                this.currentBackoff = 0;
             }
 
             // Wait for token if none available
@@ -203,6 +208,7 @@ export class TokenBucketRateLimiter {
 
             // Apply minimum delay between requests (always enforce for rate limiting)
             // For very low RPS providers, we must always enforce the delay to prevent 429 errors
+            // After backoff, we still need to ensure minDelayMs has passed since lastRefill
             const timeSinceLastRefill = Date.now() - this.lastRefill;
             if (timeSinceLastRefill < this.config.minDelayMs) {
                 await sleep(this.config.minDelayMs - timeSinceLastRefill);
@@ -211,6 +217,7 @@ export class TokenBucketRateLimiter {
             // due to the token refill mechanism, so no additional delay is needed
             // However, we still update lastRefill to track when this request was made
 
+            // Update lastRefill AFTER the delay to ensure accurate timing for next request
             this.lastRefill = Date.now();
             return true;
         } finally {

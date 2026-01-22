@@ -1,0 +1,68 @@
+{
+  "name": "ton-provider-system",
+  "version": "0.1.0",
+  "description": "A bullet-proof TON RPC provider management system with automatic failover, health checking, and rate limiting",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "rpc.json",
+    "rpc-schema.json"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "test": "ts-node src/test.ts",
+    "test:quick": "ts-node src/test.ts --quick",
+    "test:verbose": "ts-node src/test.ts --verbose",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [
+    "ton",
+    "ton-blockchain",
+    "rpc",
+    "provider",
+    "blockchain",
+    "crypto",
+    "failover",
+    "health-check",
+    "rate-limiting"
+  ],
+  "author": "",
+  "license": "MIT",
+  "packageManager": "pnpm@10.24.0",
+  "peerDependencies": {
+    "@orbs-network/ton-access": "^2.3.0",
+    "@ton/core": "^0.59.0",
+    "@ton/ton": "^15.0.0"
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@orbs-network/ton-access": "^2.3.0",
+    "@ton/core": "^0.59.0",
+    "@ton/ton": "^15.0.0",
+    "@types/node": "^25.0.10",
+    "dotenv": "^16.4.5",
+    "eslint": "^9.39.2",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.53.1"
+  }
+}

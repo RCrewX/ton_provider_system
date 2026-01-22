@@ -1,0 +1,169 @@
+{
+  "$schema": "./rpc-schema.json",
+  "version": "1.0",
+  "providers": {
+    "chainstack_testnet": {
+      "name": "Chainstack Testnet",
+      "type": "chainstack",
+      "network": "testnet",
+      "endpoints": {
+        "v2": "https://ton-testnet.core.chainstack.com/{key}/api/v2",
+        "v3": "https://ton-testnet.core.chainstack.com/{key}/api/v3"
+      },
+      "keyEnvVar": "CHAINSTACK_KEY_TESTNET",
+      "rps": 25,
+      "priority": 1,
+      "enabled": true,
+      "description": "Chainstack testnet API - 25 RPS free plan"
+    },
+    "chainstack_mainnet": {
+      "name": "Chainstack Mainnet",
+      "type": "chainstack",
+      "network": "mainnet",
+      "endpoints": {
+        "v2": "https://ton-mainnet.core.chainstack.com/{key}/api/v2",
+        "v3": "https://ton-mainnet.core.chainstack.com/{key}/api/v3"
+      },
+      "keyEnvVar": "CHAINSTACK_KEY_MAINNET",
+      "rps": 25,
+      "priority": 1,
+      "enabled": true,
+      "description": "Chainstack mainnet API - 25 RPS free plan"
+    },
+    "toncenter_testnet": {
+      "name": "TON Center Testnet",
+      "type": "toncenter",
+      "network": "testnet",
+      "endpoints": {
+        "v2": "https://testnet.toncenter.com/api/v2"
+      },
+      "apiKeyEnvVar": "TONCENTER_API_KEY",
+      "rps": 10,
+      "priority": 50,
+      "enabled": true,
+      "description": "Official TON Center testnet - 10 RPS with API key, 1 RPS without"
+    },
+    "toncenter_mainnet": {
+      "name": "TON Center Mainnet",
+      "type": "toncenter",
+      "network": "mainnet",
+      "endpoints": {
+        "v2": "https://toncenter.com/api/v2"
+      },
+      "apiKeyEnvVar": "TONCENTER_API_KEY",
+      "rps": 10,
+      "priority": 50,
+      "enabled": true,
+      "description": "Official TON Center mainnet - 10 RPS with API key, 1 RPS without"
+    },
+    "quicknode_mainnet": {
+      "name": "QuickNode Mainnet",
+      "type": "quicknode",
+      "network": "mainnet",
+      "endpoints": {
+        "v2": "https://{key}.ton-mainnet.quiknode.pro/"
+      },
+      "keyEnvVar": "QUICKNODE_KEY_MAINNET",
+      "rps": 15,
+      "priority": 2,
+      "enabled": true,
+      "description": "QuickNode mainnet - 15 RPS free plan"
+    },
+    "getblock_mainnet": {
+      "name": "GetBlock Mainnet",
+      "type": "getblock",
+      "network": "mainnet",
+      "endpoints": {
+        "v2": "https://go.getblock.io/{key}/"
+      },
+      "keyEnvVar": "GETBLOCK_KEY_MAINNET",
+      "rps": 20,
+      "priority": 3,
+      "enabled": true,
+      "description": "GetBlock mainnet API - 20 RPS"
+    },
+    "onfinality_testnet": {
+      "name": "OnFinality Testnet",
+      "type": "onfinality",
+      "network": "testnet",
+      "endpoints": {
+        "v2": "https://ton-testnet.api.onfinality.io/rpc?apikey={key}",
+        "ws": "wss://ton-testnet.api.onfinality.io/ws?apikey={key}"
+      },
+      "keyEnvVar": "ONFINALITY_KEY_TESTNET",
+      "rps": 4,
+      "priority": 5,
+      "enabled": true,
+      "description": "OnFinality testnet - 4 RPS free tier"
+    },
+    "tatum_testnet": {
+      "name": "Tatum Testnet",
+      "type": "tatum",
+      "network": "testnet",
+      "endpoints": {
+        "v2": "https://api.tatum.io/v3/blockchain/node/ton-testnet"
+      },
+      "apiKeyEnvVar": "TATUM_API_KEY_TESTNET",
+      "rps": 3,
+      "priority": 8,
+      "enabled": true,
+      "description": "Tatum testnet API - 3 RPS free plan"
+    },
+    "tatum_mainnet": {
+      "name": "Tatum Mainnet",
+      "type": "tatum",
+      "network": "mainnet",
+      "endpoints": {
+        "v2": "https://api.tatum.io/v3/blockchain/node/ton-mainnet"
+      },
+      "apiKeyEnvVar": "TATUM_API_KEY_MAINNET",
+      "rps": 3,
+      "priority": 8,
+      "enabled": true,
+      "description": "Tatum mainnet API - 3 RPS free plan"
+    },
+    "orbs_testnet": {
+      "name": "Orbs TON Access Testnet",
+      "type": "orbs",
+      "network": "testnet",
+      "endpoints": {
+        "v2": "https://ton-testnet.orbs.network/api/v2"
+      },
+      "rps": 10,
+      "priority": 10,
+      "enabled": true,
+      "isDynamic": true,
+      "description": "Orbs decentralized gateway - no hard limit, uses dynamic discovery"
+    },
+    "orbs_mainnet": {
+      "name": "Orbs TON Access Mainnet",
+      "type": "orbs",
+      "network": "mainnet",
+      "endpoints": {
+        "v2": "https://ton-mainnet.orbs.network/api/v2"
+      },
+      "rps": 10,
+      "priority": 10,
+      "enabled": true,
+      "isDynamic": true,
+      "description": "Orbs decentralized gateway - no hard limit, uses dynamic discovery"
+    }
+  },
+  "defaults": {
+    "testnet": [
+      "chainstack_testnet",
+      "toncenter_testnet",
+      "onfinality_testnet",
+      "tatum_testnet",
+      "orbs_testnet"
+    ],
+    "mainnet": [
+      "chainstack_mainnet",
+      "quicknode_mainnet",
+      "getblock_mainnet",
+      "toncenter_mainnet",
+      "tatum_mainnet",
+      "orbs_mainnet"
+    ]
+  }
+}

@@ -1,0 +1,205 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ton-game.example.com/rpc-schema.json",
+  "title": "TON RPC Provider Configuration",
+  "description": "Configuration file for unified TON RPC provider system",
+  "type": "object",
+  "required": ["version", "providers", "defaults"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference"
+    },
+    "version": {
+      "type": "string",
+      "description": "Configuration file version",
+      "pattern": "^\\d+\\.\\d+$",
+      "examples": ["1.0"]
+    },
+    "providers": {
+      "type": "object",
+      "description": "Provider definitions keyed by unique ID",
+      "additionalProperties": {
+        "$ref": "#/definitions/provider"
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Default provider order per network",
+      "required": ["testnet", "mainnet"],
+      "properties": {
+        "testnet": {
+          "type": "array",
+          "description": "Default testnet provider order (provider IDs)",
+          "items": { "type": "string" }
+        },
+        "mainnet": {
+          "type": "array",
+          "description": "Default mainnet provider order (provider IDs)",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "network": {
+      "type": "string",
+      "enum": ["testnet", "mainnet"],
+      "description": "TON network"
+    },
+    "providerType": {
+      "type": "string",
+      "enum": [
+        "chainstack",
+        "quicknode",
+        "toncenter",
+        "orbs",
+        "onfinality",
+        "ankr",
+        "getblock",
+        "tatum",
+        "tonhub",
+        "custom"
+      ],
+      "description": "Provider type identifier"
+    },
+    "endpoints": {
+      "type": "object",
+      "description": "Provider endpoint URLs. Use {key} placeholder for API key substitution from environment variable.",
+      "properties": {
+        "v2": {
+          "type": "string",
+          "description": "TON HTTP API v2 endpoint URL",
+          "format": "uri-template",
+          "examples": [
+            "https://testnet.toncenter.com/api/v2",
+            "https://ton-testnet.core.chainstack.com/{key}/api/v2"
+          ]
+        },
+        "v3": {
+          "type": "string",
+          "description": "TON HTTP API v3 endpoint URL",
+          "format": "uri-template"
+        },
+        "v4": {
+          "type": "string",
+          "description": "TON API v4 endpoint URL",
+          "format": "uri-template"
+        },
+        "ws": {
+          "type": "string",
+          "description": "WebSocket endpoint URL",
+          "format": "uri-template",
+          "examples": [
+            "wss://ton-testnet.api.onfinality.io/ws?apikey={key}"
+          ]
+        }
+      },
+      "anyOf": [
+        { "required": ["v2"] },
+        { "required": ["v3"] },
+        { "required": ["v4"] }
+      ]
+    },
+    "provider": {
+      "type": "object",
+      "description": "Single provider definition",
+      "required": ["name", "type", "network", "endpoints", "rps", "priority", "enabled"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable provider name",
+          "examples": ["Chainstack Testnet", "TON Center Mainnet"]
+        },
+        "type": {
+          "$ref": "#/definitions/providerType"
+        },
+        "network": {
+          "$ref": "#/definitions/network"
+        },
+        "endpoints": {
+          "$ref": "#/definitions/endpoints"
+        },
+        "keyEnvVar": {
+          "type": "string",
+          "description": "Environment variable name for API key (replaces {key} in endpoint URLs)",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "examples": ["CHAINSTACK_KEY_TESTNET", "QUICKNODE_KEY_MAINNET"]
+        },
+        "apiKeyEnvVar": {
+          "type": "string",
+          "description": "Environment variable name for separate API key (passed in headers)",
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "examples": ["TONCENTER_API_KEY", "TATUM_API_KEY_TESTNET"]
+        },
+        "rps": {
+          "type": "integer",
+          "description": "Requests per second limit",
+          "minimum": 1,
+          "maximum": 1000,
+          "examples": [1, 10, 25]
+        },
+        "priority": {
+          "type": "integer",
+          "description": "Selection priority (lower = higher priority)",
+          "minimum": 1,
+          "examples": [1, 10, 100]
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this provider is enabled",
+          "default": true
+        },
+        "isDynamic": {
+          "type": "boolean",
+          "description": "Whether this provider uses dynamic endpoint discovery (e.g., Orbs TON Access)",
+          "default": false
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional notes about this provider",
+          "examples": ["Chainstack testnet API - 25 RPS free plan"]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "$schema": "./provider_system/rpc-schema.json",
+      "version": "1.0",
+      "providers": {
+        "chainstack_testnet": {
+          "name": "Chainstack Testnet",
+          "type": "chainstack",
+          "network": "testnet",
+          "endpoints": {
+            "v2": "https://ton-testnet.core.chainstack.com/{key}/api/v2",
+            "v3": "https://ton-testnet.core.chainstack.com/{key}/api/v3"
+          },
+          "keyEnvVar": "CHAINSTACK_KEY_TESTNET",
+          "rps": 25,
+          "priority": 1,
+          "enabled": true,
+          "description": "Chainstack testnet API - 25 RPS free plan"
+        },
+        "toncenter_testnet": {
+          "name": "TON Center Testnet",
+          "type": "toncenter",
+          "network": "testnet",
+          "endpoints": {
+            "v2": "https://testnet.toncenter.com/api/v2"
+          },
+          "apiKeyEnvVar": "TONCENTER_API_KEY",
+          "rps": 10,
+          "priority": 50,
+          "enabled": true,
+          "description": "Official TON Center - 10 RPS with API key"
+        }
+      },
+      "defaults": {
+        "testnet": ["chainstack_testnet", "toncenter_testnet"],
+        "mainnet": []
+      }
+    }
+  ]
+}

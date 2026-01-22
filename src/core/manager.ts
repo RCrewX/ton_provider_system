@@ -147,8 +147,10 @@ export class ProviderManager {
         // Configure rate limiters for each provider BEFORE creating health checker
         for (const provider of this.registry.getAllProviders()) {
             const config = getRateLimitForType(provider.type);
-            // Add 10% buffer to minDelayMs to be more conservative and avoid hitting limits
-            const minDelayMs = Math.ceil((1000 / provider.rps) * 1.1);
+            // Add buffer to minDelayMs to be more conservative and avoid hitting limits
+            // For very low RPS (<=3), use 20% buffer; for others, use 10%
+            const bufferMultiplier = provider.rps <= 3 ? 1.2 : 1.1;
+            const minDelayMs = Math.ceil((1000 / provider.rps) * bufferMultiplier);
             // Calculate conservative burst size based on RPS:
             // - For very low RPS (<=3): burst size of 1 to be extremely conservative
             // - For low RPS (4-5): burst size of 2

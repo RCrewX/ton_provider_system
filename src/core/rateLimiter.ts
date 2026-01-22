@@ -256,8 +256,10 @@ export class TokenBucketRateLimiter {
         }
 
         // Reset tokens to 0 on rate limit error to prevent immediate retry
-        // This ensures we wait for backoff + token refill before next request
+        // Reset lastRefill to now so that refill calculation is correct after backoff
+        // This ensures we wait for backoff + proper token refill before next request
         this.tokens = 0;
+        this.lastRefill = Date.now();
 
         this.logger.warn(`Rate limit hit, backoff: ${this.currentBackoff}ms, errors: ${this.consecutiveErrors}`);
     }

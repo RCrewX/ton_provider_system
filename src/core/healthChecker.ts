@@ -339,6 +339,7 @@ export class HealthChecker {
 
         const result: ProviderHealthResult = existing ? {
             ...existing,
+            success: false, // CRITICAL: Always set success: false for degraded providers
             status: 'degraded',
             error: error || 'Marked as degraded',
             lastTested: new Date(),

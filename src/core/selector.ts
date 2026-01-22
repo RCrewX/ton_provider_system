@@ -75,6 +75,8 @@ export class ProviderSelector {
     private autoSelect: boolean = true;
     private customEndpoint: string | null = null;
     private bestProviderByNetwork: Map<Network, string> = new Map();
+    // Track currently active provider per network (the one actually being used)
+    private activeProviderByNetwork: Map<Network, string> = new Map();
 
     constructor(
         registry: ProviderRegistry,
@@ -105,6 +107,8 @@ export class ProviderSelector {
         if (!this.autoSelect && this.selectedProviderId) {
             const provider = this.registry.getProvider(this.selectedProviderId);
             if (provider && provider.network === network) {
+                // Track active provider
+                this.activeProviderByNetwork.set(network, provider.id);
                 return provider;
             }
             this.logger.warn(
@@ -124,9 +128,16 @@ export class ProviderSelector {
                 cached &&
                 health &&
                 health.success !== false &&
+                health.success !== undefined && // Explicitly check for undefined
                 this.config.minStatus.includes(health.status)
             ) {
+                // Update active provider tracking
+                this.activeProviderByNetwork.set(network, cachedBestId);
                 return cached;
+            } else {
+                // Cached provider is no longer healthy, clear cache
+                this.bestProviderByNetwork.delete(network);
+                this.activeProviderByNetwork.delete(network);
             }
         }
 
@@ -159,22 +170,35 @@ export class ProviderSelector {
             const defaults = this.registry.getDefaultOrderForNetwork(network);
             for (const defaultProvider of defaults) {
                 const health = this.healthChecker.getResult(defaultProvider.id, network);
-                // Only use default if it hasn't been tested (untested) or if it succeeded
-                if (!health || health.status === 'untested' || health.success === true) {
+                // CRITICAL: Only use default if it hasn't been tested OR if it succeeded
+                // Never use providers with success: false
+                if (!health || health.status === 'untested') {
+                    // Untested - safe to try
+                    this.logger.warn(
+                        `No healthy providers for ${network}, using untested default: ${defaultProvider.id}`
+                    );
+                    this.activeProviderByNetwork.set(network, defaultProvider.id);
+                    return defaultProvider;
+                } else if (health.success === true) {
+                    // Explicitly succeeded - safe to use
                     this.logger.warn(
                         `No healthy providers for ${network}, using default: ${defaultProvider.id}`
                     );
+                    this.activeProviderByNetwork.set(network, defaultProvider.id);
                     return defaultProvider;
                 }
+                // If health.success === false, skip this provider
             }
             
-            // If all defaults failed, try any untested provider
+            // If all defaults failed, try any untested provider (but not failed ones)
             for (const provider of providers) {
                 const health = this.healthChecker.getResult(provider.id, network);
+                // Only use untested providers, never failed ones
                 if (!health || health.status === 'untested') {
                     this.logger.warn(
                         `No tested healthy providers for ${network}, using untested: ${provider.id}`
                     );
+                    this.activeProviderByNetwork.set(network, provider.id);
                     return provider;
                 }
             }
@@ -190,11 +214,14 @@ export class ProviderSelector {
         // Only cache and log if provider has been tested and is healthy
         if (bestHealth && bestHealth.success === true) {
             this.bestProviderByNetwork.set(network, best.id);
+            this.activeProviderByNetwork.set(network, best.id);
             this.logger.debug(
                 `Best provider for ${network}: ${best.id} (score: ${scored[0].score.toFixed(2)})`
             );
         } else {
             // Don't cache untested providers, but still return them as fallback
+            // Track active provider even if untested (so we know which one failed)
+            this.activeProviderByNetwork.set(network, best.id);
             this.logger.debug(
                 `Best provider for ${network}: ${best.id} (score: ${scored[0].score.toFixed(2)}, untested)`
             );
@@ -409,9 +436,28 @@ export class ProviderSelector {
         if (this.bestProviderByNetwork.get(network) === providerId) {
             this.bestProviderByNetwork.delete(network);
         }
+        
+        // Clear active provider cache for this network to force re-selection
+        this.activeProviderByNetwork.delete(network);
 
         // Find next best
         return this.getNextProvider(network, [providerId]);
+    }
+    
+    /**
+     * Get the currently active provider ID for a network
+     * (the one that was last selected and is being used)
+     */
+    getActiveProviderId(network: Network): string | null {
+        return this.activeProviderByNetwork.get(network) || null;
+    }
+    
+    /**
+     * Clear cache for a network (force re-selection)
+     */
+    clearCache(network: Network): void {
+        this.bestProviderByNetwork.delete(network);
+        this.activeProviderByNetwork.delete(network);
     }
 
     // ========================================================================

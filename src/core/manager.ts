@@ -305,6 +305,9 @@ export class ProviderManager {
             this.options.logger.warn('No providers available, using fallback');
             return this.getFallbackEndpoint();
         }
+        
+        // Track active provider for error reporting
+        this.selector!.getActiveProviderId(this.network!) || this.selector!.getBestProvider(this.network!);
 
         // Handle dynamic providers (Orbs)
         if (provider.isDynamic && provider.type === 'orbs') {
@@ -325,9 +328,16 @@ export class ProviderManager {
      * Get endpoint with rate limiting
      *
      * Waits for rate limit token before returning endpoint.
+     * 
+     * @param forceRefresh - If true, clears cache and forces re-selection
      */
-    async getEndpointWithRateLimit(timeoutMs?: number): Promise<string> {
+    async getEndpointWithRateLimit(timeoutMs?: number, forceRefresh: boolean = false): Promise<string> {
         this.ensureInitialized();
+
+        // Clear cache if force refresh requested
+        if (forceRefresh) {
+            this.selector!.clearCache(this.network!);
+        }
 
         const provider = this.selector!.getBestProvider(this.network!);
         if (!provider) {
@@ -391,7 +401,20 @@ export class ProviderManager {
     reportError(error: Error | string): void {
         if (!this.initialized || !this.network) return;
 
-        const provider = this.selector!.getBestProvider(this.network);
+        // Get the ACTIVE provider (the one that just failed), not the "best" one
+        // This ensures we mark the correct provider as failed
+        const activeProviderId = this.selector!.getActiveProviderId(this.network);
+        let provider: ResolvedProvider | null = null;
+        
+        if (activeProviderId) {
+            provider = this.registry!.getProvider(activeProviderId);
+        }
+        
+        // Fallback to best provider if no active provider tracked
+        if (!provider) {
+            provider = this.selector!.getBestProvider(this.network);
+        }
+        
         if (!provider) return;
 
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -417,7 +440,9 @@ export class ProviderManager {
             this.healthChecker!.markDegraded(provider.id, this.network, errorMsg);
         }
 
-        // Try to switch to next provider
+        // CRITICAL: Clear cache and switch to next provider immediately
+        // This ensures the next getEndpoint() call gets a different provider
+        this.selector!.clearCache(this.network);
         this.selector!.handleProviderFailure(provider.id, this.network);
         this.notifyListeners();
     }

@@ -337,14 +337,24 @@ export class HealthChecker {
         const key = this.getResultKey(providerId, network);
         const existing = this.results.get(key);
 
-        if (existing) {
-            this.results.set(key, {
-                ...existing,
-                status: 'degraded',
-                error: error || 'Marked as degraded',
-                lastTested: new Date(),
-            });
-        }
+        const result: ProviderHealthResult = existing ? {
+            ...existing,
+            status: 'degraded',
+            error: error || 'Marked as degraded',
+            lastTested: new Date(),
+        } : {
+            id: providerId,
+            network,
+            success: false,
+            status: 'degraded',
+            latencyMs: null,
+            seqno: null,
+            blocksBehind: 0,
+            lastTested: new Date(),
+            error: error || 'Marked as degraded',
+        };
+
+        this.results.set(key, result);
     }
 
     /**
@@ -354,14 +364,25 @@ export class HealthChecker {
         const key = this.getResultKey(providerId, network);
         const existing = this.results.get(key);
 
-        if (existing) {
-            this.results.set(key, {
-                ...existing,
-                status: 'offline',
-                error: error || 'Marked as offline',
-                lastTested: new Date(),
-            });
-        }
+        const result: ProviderHealthResult = existing ? {
+            ...existing,
+            status: 'offline',
+            success: false, // Ensure success is false for offline providers
+            error: error || 'Marked as offline',
+            lastTested: new Date(),
+        } : {
+            id: providerId,
+            network,
+            success: false,
+            status: 'offline',
+            latencyMs: null,
+            seqno: null,
+            blocksBehind: 0,
+            lastTested: new Date(),
+            error: error || 'Marked as offline',
+        };
+
+        this.results.set(key, result);
     }
 
     // ========================================================================

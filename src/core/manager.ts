@@ -394,13 +394,27 @@ export class ProviderManager {
         const provider = this.selector!.getBestProvider(this.network);
         if (!provider) return;
 
-        const errorMsg = error instanceof Error ? error.message : error;
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        const errorMsgLower = errorMsg.toLowerCase();
 
-        if (isRateLimitError(error)) {
+        // Detect error types to determine how to mark the provider
+        const is429 = errorMsgLower.includes('429') || errorMsgLower.includes('rate limit');
+        const is503 = errorMsgLower.includes('503') || errorMsgLower.includes('service unavailable');
+        const is502 = errorMsgLower.includes('502') || errorMsgLower.includes('bad gateway');
+        const is404 = errorMsgLower.includes('404') || errorMsgLower.includes('not found');
+        const isTimeout = errorMsgLower.includes('timeout') || errorMsgLower.includes('abort');
+
+        if (isRateLimitError(error) || is429) {
             this.rateLimiter!.reportRateLimitError(provider.id);
             this.healthChecker!.markDegraded(provider.id, this.network, errorMsg);
-        } else {
+        } else if (is503 || is502 || is404 || isTimeout) {
+            // Server errors, timeouts, and not found should mark provider as offline
             this.rateLimiter!.reportError(provider.id);
+            this.healthChecker!.markOffline(provider.id, this.network, errorMsg);
+        } else {
+            // Other errors - mark as degraded
+            this.rateLimiter!.reportError(provider.id);
+            this.healthChecker!.markDegraded(provider.id, this.network, errorMsg);
         }
 
         // Try to switch to next provider

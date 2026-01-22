@@ -337,16 +337,18 @@ export class HealthChecker {
         const key = this.getResultKey(providerId, network);
         const existing = this.results.get(key);
 
+        // Degraded providers are still functional (e.g., 429 rate limit)
+        // They should have success: true so they can still be used, just with lower priority
         const result: ProviderHealthResult = existing ? {
             ...existing,
-            success: false, // CRITICAL: Always set success: false for degraded providers
+            success: true, // Degraded providers are still usable, just slower/rate-limited
             status: 'degraded',
             error: error || 'Marked as degraded',
             lastTested: new Date(),
         } : {
             id: providerId,
             network,
-            success: false,
+            success: true, // Degraded providers are still usable
             status: 'degraded',
             latencyMs: null,
             seqno: null,

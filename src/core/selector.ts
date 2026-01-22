@@ -166,34 +166,51 @@ export class ProviderSelector {
 
         if (scored.length === 0) {
             // Fall back to default order if no healthy providers
-            // But only if the default provider hasn't been tested or has success: true
+            // Allow retrying failed providers after cooldown period
             const defaults = this.registry.getDefaultOrderForNetwork(network);
             for (const defaultProvider of defaults) {
                 const health = this.healthChecker.getResult(defaultProvider.id, network);
-                // CRITICAL: Only use default if it hasn't been tested OR if it succeeded
-                // Never use providers with success: false
+                
+                // Untested - safe to try
                 if (!health || health.status === 'untested') {
-                    // Untested - safe to try
                     this.logger.warn(
                         `No healthy providers for ${network}, using untested default: ${defaultProvider.id}`
                     );
                     this.activeProviderByNetwork.set(network, defaultProvider.id);
                     return defaultProvider;
-                } else if (health.success === true) {
-                    // Explicitly succeeded - safe to use
+                }
+                
+                // Explicitly succeeded - safe to use
+                if (health.success === true) {
                     this.logger.warn(
                         `No healthy providers for ${network}, using default: ${defaultProvider.id}`
                     );
                     this.activeProviderByNetwork.set(network, defaultProvider.id);
                     return defaultProvider;
                 }
-                // If health.success === false, skip this provider
+                
+                // Failed provider - check if cooldown expired
+                if (health.success === false && health.lastTested) {
+                    const timeSinceFailure = Date.now() - health.lastTested.getTime();
+                    const cooldownMs = 30000; // 30 seconds cooldown
+                    
+                    if (timeSinceFailure > cooldownMs) {
+                        // Cooldown expired - allow retry
+                        this.logger.warn(
+                            `No healthy providers for ${network}, retrying failed default after cooldown: ${defaultProvider.id}`
+                        );
+                        this.activeProviderByNetwork.set(network, defaultProvider.id);
+                        return defaultProvider;
+                    }
+                }
+                // Still in cooldown - skip this provider
             }
             
-            // If all defaults failed, try any untested provider (but not failed ones)
+            // If all defaults failed, try any untested provider or retry failed ones after cooldown
             for (const provider of providers) {
                 const health = this.healthChecker.getResult(provider.id, network);
-                // Only use untested providers, never failed ones
+                
+                // Untested providers
                 if (!health || health.status === 'untested') {
                     this.logger.warn(
                         `No tested healthy providers for ${network}, using untested: ${provider.id}`
@@ -201,10 +218,25 @@ export class ProviderSelector {
                     this.activeProviderByNetwork.set(network, provider.id);
                     return provider;
                 }
+                
+                // Failed provider - check if cooldown expired
+                if (health.success === false && health.lastTested) {
+                    const timeSinceFailure = Date.now() - health.lastTested.getTime();
+                    const cooldownMs = 30000; // 30 seconds cooldown
+                    
+                    if (timeSinceFailure > cooldownMs) {
+                        // Cooldown expired - allow retry
+                        this.logger.warn(
+                            `No healthy providers for ${network}, retrying failed provider after cooldown: ${provider.id}`
+                        );
+                        this.activeProviderByNetwork.set(network, provider.id);
+                        return provider;
+                    }
+                }
             }
             
             // Last resort: return null (caller should handle this)
-            this.logger.error(`No available providers for ${network} (all tested and failed)`);
+            this.logger.error(`No available providers for ${network} (all tested and failed, cooldown active)`);
             return null;
         }
 
@@ -287,14 +319,31 @@ export class ProviderSelector {
             return 0.01 * (1 / (provider.priority + 1));
         }
 
-        // Providers that failed health check should not be selected
-        // Even if status is 'degraded' (e.g., HTTP 429), if success=false, don't use it
+        // Providers that failed health check (success: false) - allow retry after cooldown
+        // This allows providers to recover from temporary failures (503, network errors, etc.)
         if (health.success === false) {
+            // If last tested was more than 30 seconds ago, allow retry with very low score
+            // This gives providers a chance to recover from temporary failures
+            if (health.lastTested) {
+                const timeSinceFailure = Date.now() - health.lastTested.getTime();
+                const cooldownMs = 30000; // 30 seconds cooldown
+                
+                if (timeSinceFailure > cooldownMs) {
+                    // Cooldown expired - allow retry with very low score
+                    // Lower priority = higher score multiplier (inverse relationship)
+                    return 0.001 * (1 / (provider.priority + 1));
+                }
+            }
+            // Still in cooldown - don't use
             return 0;
         }
 
-        // Offline providers get zero score
+        // Offline providers (status: offline) - also allow retry after cooldown
+        // Offline providers have success: false, so they're already handled above
+        // But we check status here to be explicit
         if (health.status === 'offline') {
+            // Already handled in the success: false check above, but if somehow
+            // an offline provider has success: true, still don't use it
             return 0;
         }
 

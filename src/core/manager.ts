@@ -147,10 +147,26 @@ export class ProviderManager {
         // Configure rate limiters for each provider BEFORE creating health checker
         for (const provider of this.registry.getAllProviders()) {
             const config = getRateLimitForType(provider.type);
+            // Add 10% buffer to minDelayMs to be more conservative and avoid hitting limits
+            const minDelayMs = Math.ceil((1000 / provider.rps) * 1.1);
+            // Calculate conservative burst size based on RPS:
+            // - For very low RPS (<=3): burst size of 1 to be extremely conservative
+            // - For low RPS (4-5): burst size of 2
+            // - For higher RPS: use 1.5x RPS (standard token bucket pattern)
+            let burstSize: number;
+            if (provider.rps <= 3) {
+                burstSize = 1; // Very conservative for low RPS providers like Tatum
+            } else if (provider.rps <= 5) {
+                burstSize = 2; // Conservative for low RPS
+            } else {
+                burstSize = Math.max(3, Math.ceil(provider.rps * 1.5)); // 150% for higher RPS
+            }
+            
             this.rateLimiter.setConfig(provider.id, {
                 ...config,
                 rps: provider.rps,
-                minDelayMs: Math.ceil(1000 / provider.rps),
+                minDelayMs,
+                burstSize,
             });
         }
         

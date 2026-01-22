@@ -201,11 +201,13 @@ export class TokenBucketRateLimiter {
             // Consume token
             this.tokens--;
 
-            // Apply minimum delay between requests
+            // Apply minimum delay between requests (always enforce for rate limiting)
             const timeSinceLastRefill = Date.now() - this.lastRefill;
             if (timeSinceLastRefill < this.config.minDelayMs) {
                 await sleep(this.config.minDelayMs - timeSinceLastRefill);
             }
+            // Note: If timeSinceLastRefill >= minDelayMs, we've already waited long enough
+            // due to the token refill mechanism, so no additional delay is needed
 
             this.lastRefill = Date.now();
             return true;

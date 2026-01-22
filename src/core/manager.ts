@@ -407,7 +407,7 @@ export class ProviderManager {
         let provider: ResolvedProvider | null = null;
         
         if (activeProviderId) {
-            provider = this.registry!.getProvider(activeProviderId);
+            provider = this.registry!.getProvider(activeProviderId) || null;
         }
         
         // Fallback to best provider if no active provider tracked

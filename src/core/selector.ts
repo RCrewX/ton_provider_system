@@ -416,9 +416,16 @@ export class ProviderSelector {
 
     /**
      * Clear cached best providers (forces recalculation)
+     * @param network - Optional network to clear cache for. If not provided, clears all networks.
      */
-    clearCache(): void {
-        this.bestProviderByNetwork.clear();
+    clearCache(network?: Network): void {
+        if (network) {
+            this.bestProviderByNetwork.delete(network);
+            this.activeProviderByNetwork.delete(network);
+        } else {
+            this.bestProviderByNetwork.clear();
+            this.activeProviderByNetwork.clear();
+        }
     }
 
     /**
@@ -450,14 +457,6 @@ export class ProviderSelector {
      */
     getActiveProviderId(network: Network): string | null {
         return this.activeProviderByNetwork.get(network) || null;
-    }
-    
-    /**
-     * Clear cache for a network (force re-selection)
-     */
-    clearCache(network: Network): void {
-        this.bestProviderByNetwork.delete(network);
-        this.activeProviderByNetwork.delete(network);
     }
 
     // ========================================================================

@@ -58,8 +58,21 @@ export class NodeAdapter {
      * Get TonClient instance
      *
      * Creates a new client if endpoint changed, otherwise returns cached.
+     * 
+     * NOTE: Direct TonClient calls bypass rate limiting. For rate-limited operations,
+     * use adapter methods (getAddressState, runGetMethod, etc.) or wrap your calls
+     * with rate limit token acquisition.
+     * 
+     * Example with rate limiting:
+     * ```typescript
+     * const endpoint = await adapter.manager.getEndpointWithRateLimit();
+     * // Make your TonClient call
+     * adapter.manager.reportSuccess(); // or reportError() on failure
+     * ```
      */
     async getClient(): Promise<TonClient> {
+        // Use getEndpoint() (not getEndpointWithRateLimit) to avoid blocking on client creation
+        // Rate limiting should be applied per-operation, not per-client-creation
         const endpoint = await this.manager.getEndpoint();
         const network = this.manager.getNetwork();
 
@@ -95,6 +108,21 @@ export class NodeAdapter {
         this.logger.debug(`Created TonClient for ${network}`, { endpoint });
 
         return client;
+    }
+
+    /**
+     * Get TonClient with rate limiting applied
+     * 
+     * Acquires a rate limit token before returning the client.
+     * Use this when you need to ensure rate limiting is respected.
+     * 
+     * Note: This only acquires ONE token. For multiple operations,
+     * you should acquire tokens before each operation or use adapter methods.
+     */
+    async getClientWithRateLimit(timeoutMs?: number): Promise<TonClient> {
+        // Acquire rate limit token before creating/returning client
+        await this.manager.getEndpointWithRateLimit(timeoutMs);
+        return this.getClient();
     }
 
     /**
@@ -334,10 +362,69 @@ export function createNodeAdapter(manager: ProviderManager, logger?: Logger): No
 
 /**
  * Get TonClient from ProviderManager (convenience function)
+ * 
+ * WARNING: Direct TonClient API calls bypass rate limiting!
+ * For rate-limited operations, use one of these approaches:
+ * 
+ * 1. Use adapter methods (recommended):
+ *    ```typescript
+ *    const adapter = new NodeAdapter(manager);
+ *    const state = await adapter.getAddressState(address);
+ *    ```
+ * 
+ * 2. Acquire rate limit tokens before operations:
+ *    ```typescript
+ *    await manager.getEndpointWithRateLimit(); // Acquire token
+ *    const result = await client.someMethod();
+ *    manager.reportSuccess(); // or reportError() on failure
+ *    ```
+ * 
+ * 3. Use getTonClientWithRateLimit() for operations that need rate limiting
  */
 export async function getTonClient(manager: ProviderManager): Promise<TonClient> {
     const adapter = new NodeAdapter(manager);
     return adapter.getClient();
+}
+
+/**
+ * Get TonClient with rate limiting wrapper
+ * 
+ * Returns a TonClient along with helper methods to ensure rate limiting.
+ * Use this when you need to make multiple TonClient calls with rate limiting.
+ * 
+ * Example:
+ * ```typescript
+ * const { client, withRateLimit } = await getTonClientWithRateLimit(manager);
+ * 
+ * // Wrap your operations
+ * const balance = await withRateLimit(() => client.getBalance(address));
+ * const state = await withRateLimit(() => client.getContractState(address));
+ * ```
+ */
+export async function getTonClientWithRateLimit(
+    manager: ProviderManager
+): Promise<{
+    client: TonClient;
+    withRateLimit: <T>(fn: () => Promise<T>) => Promise<T>;
+}> {
+    const adapter = new NodeAdapter(manager);
+    const client = await adapter.getClient();
+    
+    const withRateLimit = async <T>(fn: () => Promise<T>): Promise<T> => {
+        // Acquire rate limit token before operation
+        await manager.getEndpointWithRateLimit();
+        
+        try {
+            const result = await fn();
+            manager.reportSuccess();
+            return result;
+        } catch (error) {
+            manager.reportError(error as Error);
+            throw error;
+        }
+    };
+    
+    return { client, withRateLimit };
 }
 
 /**

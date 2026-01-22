@@ -180,6 +180,7 @@ export {
     NodeAdapter,
     createNodeAdapter,
     getTonClient,
+    getTonClientWithRateLimit,
     getTonClientForNetwork,
     resetNodeAdapter,
 } from './adapters/node';

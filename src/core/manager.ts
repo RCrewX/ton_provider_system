@@ -308,21 +308,24 @@ export class ProviderManager {
         }
         
         // Track active provider for error reporting
-        this.selector!.getActiveProviderId(this.network!) || this.selector!.getBestProvider(this.network!);
+        const activeProviderId = this.selector!.getActiveProviderId(this.network!);
+        if (!activeProviderId) {
+            this.selector!.getBestProvider(this.network!);
+        }
 
         // Handle dynamic providers (Orbs)
         if (provider.isDynamic && provider.type === 'orbs') {
             try {
                 const { getHttpEndpoint } = await import('@orbs-network/ton-access');
                 const endpoint = await getHttpEndpoint({ network: this.network! });
-                return normalizeV2Endpoint(endpoint);
+                return normalizeV2Endpoint(endpoint, provider);
             } catch (error: any) {
                 this.options.logger.warn(`Failed to get Orbs endpoint: ${error.message}`);
                 // Fall through to static endpoint
             }
         }
 
-        return normalizeV2Endpoint(provider.endpointV2);
+        return normalizeV2Endpoint(provider.endpointV2, provider);
     }
 
     /**
@@ -352,12 +355,12 @@ export class ProviderManager {
             // Try next provider
             const next = this.selector!.getNextProvider(this.network!, [provider.id]);
             if (next) {
-                return normalizeV2Endpoint(next.endpointV2);
+                return normalizeV2Endpoint(next.endpointV2, next);
             }
             return this.getFallbackEndpoint();
         }
 
-        return normalizeV2Endpoint(provider.endpointV2);
+        return normalizeV2Endpoint(provider.endpointV2, provider);
     }
 
     /**

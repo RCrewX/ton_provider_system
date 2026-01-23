@@ -155,7 +155,11 @@ async function testProviderWithTonClient(
 /**
  * Run browser compatibility tests for all providers
  */
-async function runBrowserTests(network: 'testnet' | 'mainnet' = 'testnet', verbose: boolean = false): Promise<void> {
+async function runBrowserTests(
+    network: 'testnet' | 'mainnet' = 'testnet',
+    verbose: boolean = false,
+    providerType: string | null = null
+): Promise<void> {
     console.log(`\n${'='.repeat(80)}`);
     console.log(`Browser Compatibility Test - ${network.toUpperCase()}`);
     console.log(`${'='.repeat(80)}`);
@@ -168,7 +172,14 @@ async function runBrowserTests(network: 'testnet' | 'mainnet' = 'testnet', verbo
     await manager.init(network, true); // Test providers on init
 
     // Get all providers (already filtered for browser compatibility)
-    const providers = manager.getProviders();
+    let providers = manager.getProviders();
+    
+    // Filter by provider type if specified
+    if (providerType) {
+        providers = providers.filter(p => p.type === providerType);
+        console.log(`Filtering by provider type: ${providerType}`);
+    }
+    
     const healthResults = manager.getProviderHealthResults();
 
     console.log(`Found ${providers.length} browser-compatible provider(s) for ${network}`);
@@ -311,9 +322,16 @@ async function main() {
         ? args[args.indexOf('--network') + 1] 
         : 'testnet') as 'testnet' | 'mainnet';
     const verbose = args.includes('--verbose');
+    const providerType = args.includes('--provider') 
+        ? args[args.indexOf('--provider') + 1] 
+        : null;
+
+    if (providerType) {
+        console.log(`\nProvider Type Filter: ${providerType}`);
+    }
 
     try {
-        await runBrowserTests(network, verbose);
+        await runBrowserTests(network, verbose, providerType);
         process.exit(0);
     } catch (error: any) {
         console.error(`\n❌ Test failed: ${error.message}`);

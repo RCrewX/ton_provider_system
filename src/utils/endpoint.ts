@@ -4,24 +4,43 @@
  * URL normalization and manipulation for TON RPC endpoints.
  */
 
+import type { ResolvedProvider, ProviderType } from '../types';
+import { createProvider } from '../providers';
+
 // ============================================================================
 // URL Normalization
 // ============================================================================
 
 /**
- * Normalize endpoint URL for TonClient v2 API.
- * Ensures the endpoint has /jsonRPC suffix for JSON-RPC POST requests.
+ * Normalize endpoint URL for TonClient v2 API using provider-specific implementation.
+ * This is the preferred method when a ResolvedProvider is available.
  *
- * Different providers have different endpoint formats:
- * - toncenter.com: POST to /api/v2/jsonRPC
- * - Chainstack: POST to /api/v2/jsonRPC (needs /jsonRPC suffix!)
- * - TON Access (orbs): Already returns correct JSON-RPC endpoint
- * - QuickNode: Needs /jsonRPC appended to base URL
- * - GetBlock: Needs /jsonRPC appended to base URL
- * - Tatum: Gateway URLs need /jsonRPC appended (gateway.tatum.io/jsonRPC)
- * - OnFinality: Uses /public or /rpc path with query params - preserve query params
+ * @param endpoint - Endpoint URL to normalize
+ * @param provider - Resolved provider configuration (optional)
+ * @returns Normalized endpoint URL
  */
-export function normalizeV2Endpoint(endpoint: string): string {
+export function normalizeV2Endpoint(
+    endpoint: string,
+    provider?: ResolvedProvider
+): string {
+    // If provider is available, use provider-specific implementation
+    if (provider) {
+        const providerImpl = createProvider(provider);
+        return providerImpl.normalizeEndpoint(endpoint);
+    }
+
+    // Fallback: detect provider type from URL and use appropriate normalization
+    return normalizeV2EndpointFallback(endpoint);
+}
+
+/**
+ * Fallback normalization when provider type is unknown.
+ * Tries to detect provider type from URL and apply appropriate normalization.
+ *
+ * @param endpoint - Endpoint URL to normalize
+ * @returns Normalized endpoint URL
+ */
+function normalizeV2EndpointFallback(endpoint: string): string {
     let normalized = endpoint.trim();
 
     // Remove trailing slash
@@ -136,6 +155,24 @@ export function normalizeV2Endpoint(endpoint: string): string {
     }
 
     return normalized;
+}
+
+/**
+ * Detect provider type from endpoint URL.
+ * Used for fallback normalization when provider is not available.
+ */
+function detectProviderTypeFromUrl(url: string): ProviderType | null {
+    const lower = url.toLowerCase();
+
+    if (lower.includes('chainstack.com')) return 'chainstack';
+    if (lower.includes('gateway.tatum.io')) return 'tatum';
+    if (lower.includes('onfinality.io')) return 'onfinality';
+    if (lower.includes('quiknode.pro')) return 'quicknode';
+    if (lower.includes('getblock.io')) return 'getblock';
+    if (lower.includes('toncenter.com')) return 'toncenter';
+    if (lower.includes('orbs.network') || lower.includes('ton-access')) return 'orbs';
+
+    return null;
 }
 
 /**

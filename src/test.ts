@@ -70,6 +70,7 @@ interface TestResult {
 
 const results: TestResult[] = [];
 let verbose = false;
+let providerTypeFilter: string | null = null;
 
 function log(message: string): void {
     console.log(message);
@@ -128,6 +129,16 @@ function assertDefined<T>(value: T | null | undefined, message: string): asserts
     }
 }
 
+/**
+ * Filter providers by type if providerTypeFilter is set
+ */
+function filterProvidersByType<T extends { type: string }>(providers: T[]): T[] {
+    if (!providerTypeFilter) {
+        return providers;
+    }
+    return providers.filter(p => p.type === providerTypeFilter);
+}
+
 // =============================================================================
 // Test Suites
 // =============================================================================
@@ -179,8 +190,8 @@ async function testProviderRegistry(): Promise<void> {
 
     await runTest('Get providers for network', async () => {
         const registry = await createRegistry();
-        const testnetProviders = registry.getProvidersForNetwork('testnet');
-        const mainnetProviders = registry.getProvidersForNetwork('mainnet');
+        const testnetProviders = filterProvidersByType(registry.getProvidersForNetwork('testnet'));
+        const mainnetProviders = filterProvidersByType(registry.getProvidersForNetwork('mainnet'));
 
         logVerbose(`Testnet: ${testnetProviders.length}, Mainnet: ${mainnetProviders.length}`);
 
@@ -224,10 +235,17 @@ async function testHealthChecker(network: Network): Promise<void> {
         const registry = await createRegistry();
         const checker = createHealthChecker({ timeoutMs: 15000 });
 
-        // Find toncenter for the network (most reliable)
-        const toncenter = registry.getProvider(`toncenter_${network}`);
+        // Find toncenter for the network (most reliable), or use provider type filter
+        let toncenter;
+        if (providerTypeFilter) {
+            const providers = filterProvidersByType(registry.getProvidersForNetwork(network));
+            toncenter = providers.find(p => p.type === providerTypeFilter) || providers[0];
+        } else {
+            toncenter = registry.getProvider(`toncenter_${network}`);
+        }
+        
         if (!toncenter) {
-            logVerbose('No toncenter provider configured, skipping');
+            logVerbose(`No ${providerTypeFilter || 'toncenter'} provider configured, skipping`);
             return;
         }
 
@@ -245,7 +263,7 @@ async function testHealthChecker(network: Network): Promise<void> {
         const rateLimiter = createRateLimiterManager();
         
         // Configure rate limiters for providers
-        const providers = registry.getProvidersForNetwork(network).slice(0, 3);
+        const providers = filterProvidersByType(registry.getProvidersForNetwork(network)).slice(0, 3);
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
@@ -319,7 +337,7 @@ async function testHealthChecker(network: Network): Promise<void> {
     await runTest('Get best provider with detailed analysis', async () => {
         const registry = await createRegistry();
         const checker = createHealthChecker({ timeoutMs: 10000 });
-        const providers = registry.getProvidersForNetwork(network).slice(0, 3);
+        const providers = filterProvidersByType(registry.getProvidersForNetwork(network)).slice(0, 3);
 
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
@@ -398,7 +416,7 @@ async function testHealthChecker(network: Network): Promise<void> {
         const registry = await createRegistry();
         const checker = createHealthChecker({ timeoutMs: 5000 });
 
-        const providers = registry.getProvidersForNetwork(network);
+        const providers = filterProvidersByType(registry.getProvidersForNetwork(network));
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
@@ -511,7 +529,7 @@ async function testProviderSelector(network: Network): Promise<void> {
         const selector = createSelector(registry, checker);
 
         // Test some providers first
-        const providers = registry.getProvidersForNetwork(network).slice(0, 3);
+        const providers = filterProvidersByType(registry.getProvidersForNetwork(network)).slice(0, 3);
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
@@ -566,7 +584,7 @@ async function testProviderSelector(network: Network): Promise<void> {
         const checker = createHealthChecker();
         const selector = createSelector(registry, checker);
 
-        const providers = registry.getProvidersForNetwork(network);
+        const providers = filterProvidersByType(registry.getProvidersForNetwork(network));
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
@@ -604,7 +622,7 @@ async function testProviderSelector(network: Network): Promise<void> {
         const checker = createHealthChecker();
         const selector = createSelector(registry, checker);
 
-        const providers = registry.getProvidersForNetwork(network);
+        const providers = filterProvidersByType(registry.getProvidersForNetwork(network));
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
@@ -898,7 +916,7 @@ async function testEdgeCases(network: Network): Promise<void> {
         await pm.init(network, false);
         
         // Manually mark all providers as failed
-        const providers = pm['registry']!.getProvidersForNetwork(network);
+        const providers = filterProvidersByType(pm['registry']!.getProvidersForNetwork(network));
         const checker = pm['healthChecker']!;
         
         for (const provider of providers) {
@@ -936,7 +954,7 @@ async function testEdgeCases(network: Network): Promise<void> {
         const pm = new ProviderManager({});
         await pm.init(network, false);
         
-        const providers = pm['registry']!.getProvidersForNetwork(network).slice(0, 2);
+        const providers = filterProvidersByType(pm['registry']!.getProvidersForNetwork(network)).slice(0, 2);
         if (providers.length === 0) {
             logVerbose(`No providers for ${network}, skipping`);
             return;
@@ -1090,6 +1108,7 @@ async function main(): Promise<void> {
     const args = process.argv.slice(2);
     let network: Network = 'testnet';
     let quick = false;
+    let providerType: string | null = null;
 
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--network' && args[i + 1]) {
@@ -1098,6 +1117,8 @@ async function main(): Promise<void> {
             verbose = true;
         } else if (args[i] === '--quick' || args[i] === '-q') {
             quick = true;
+        } else if (args[i] === '--provider' && args[i + 1]) {
+            providerType = args[++i];
         }
     }
 
@@ -1107,6 +1128,10 @@ async function main(): Promise<void> {
     console.log(`\nNetwork: ${network}`);
     console.log(`Verbose: ${verbose}`);
     console.log(`Quick: ${quick}`);
+    if (providerType) {
+        console.log(`Provider Type: ${providerType}`);
+        providerTypeFilter = providerType;
+    }
 
     const startTime = performance.now();
 

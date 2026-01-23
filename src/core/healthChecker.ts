@@ -16,6 +16,7 @@ import type {
     TimeoutError,
 } from '../types';
 import { normalizeV2Endpoint } from '../utils/endpoint';
+import { createProvider } from '../providers';
 import type { RateLimiterManager } from './rateLimiter';
 
 // ============================================================================
@@ -118,13 +119,17 @@ export class HealthChecker {
                 throw new Error('No valid endpoint available');
             }
 
-            // Check for required API keys
-            if (provider.type === 'tatum' && !provider.apiKey) {
-                throw new Error('Tatum provider requires API key (set TATUM_API_KEY_TESTNET or TATUM_API_KEY_MAINNET)');
+            // Create provider-specific implementation
+            const providerImpl = createProvider(provider);
+
+            // Validate provider configuration
+            const validation = providerImpl.validateConfig();
+            if (!validation.valid) {
+                throw new Error(validation.error || 'Provider configuration invalid');
             }
 
-            // Normalize endpoint for v2 API (provider-specific handling)
-            let normalizedEndpoint = this.normalizeEndpointForProvider(provider, endpoint);
+            // Normalize endpoint using provider-specific implementation
+            const normalizedEndpoint = providerImpl.normalizeEndpoint(endpoint);
             
             // Debug logging for OnFinality
             if (provider.type === 'onfinality') {
@@ -135,7 +140,7 @@ export class HealthChecker {
             // For OnFinality, if /rpc fails, it will automatically retry with /public
             let info: MasterchainInfo;
             try {
-                info = await this.callGetMasterchainInfo(normalizedEndpoint, provider);
+                info = await this.callGetMasterchainInfo(normalizedEndpoint, provider, providerImpl);
             } catch (error: any) {
                 // If OnFinality /rpc fails with backend error and we have an API key, try /public
                 if (
@@ -146,7 +151,9 @@ export class HealthChecker {
                 ) {
                     this.logger.debug(`OnFinality /rpc failed, retrying with /public endpoint`);
                     const publicEndpoint = normalizedEndpoint.replace('/rpc', '/public');
-                    info = await this.callGetMasterchainInfo(publicEndpoint, { ...provider, apiKey: undefined });
+                    const publicProvider = { ...provider, apiKey: undefined };
+                    const publicProviderImpl = createProvider(publicProvider);
+                    info = await this.callGetMasterchainInfo(publicEndpoint, publicProvider, publicProviderImpl);
                 } else {
                     throw error;
                 }
@@ -431,60 +438,27 @@ export class HealthChecker {
     }
 
     /**
-     * Normalize endpoint for provider-specific requirements
-     * 
-     * Note: normalizeV2Endpoint now handles all provider-specific cases correctly,
-     * including Tatum (/jsonRPC), OnFinality (/public or /rpc), QuickNode, and GetBlock.
-     */
-    private normalizeEndpointForProvider(provider: ResolvedProvider, endpoint: string): string {
-        // Handle legacy Tatum API format conversion (if needed)
-        if (provider.type === 'tatum' && endpoint.includes('api.tatum.io/v3/blockchain/node')) {
-            const network = provider.network === 'testnet' ? 'testnet' : 'mainnet';
-            endpoint = `https://ton-${network}.gateway.tatum.io`;
-        }
-        
-        // Use the unified normalization function which handles all providers correctly
-        return normalizeV2Endpoint(endpoint);
-    }
-
-    /**
      * Call getMasterchainInfo API with provider-specific handling
      */
     private async callGetMasterchainInfo(
         endpoint: string,
-        provider: ResolvedProvider
+        provider: ResolvedProvider,
+        providerImpl: ReturnType<typeof createProvider>
     ): Promise<MasterchainInfo> {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs);
 
-        // Build headers with provider-specific API key handling
-        const headers: Record<string, string> = {
-            'Content-Type': 'application/json',
-        };
+        // Build headers using provider-specific implementation
+        const headers = providerImpl.buildHeaders();
 
-        // Tatum requires API key in x-api-key header
-        if (provider.type === 'tatum' && provider.apiKey) {
-            headers['x-api-key'] = provider.apiKey;
-        }
-
-        // OnFinality supports API key in header (preferred) or query params
-        // Use header method to avoid query string issues
-        if (provider.type === 'onfinality' && provider.apiKey) {
-            headers['apikey'] = provider.apiKey;
-        }
-
-        // Other providers (TonCenter, Chainstack) use apiKey in TonClient, not in health check
+        // Build request using provider-specific implementation
+        const requestBody = providerImpl.buildRequest('getMasterchainInfo', {});
 
         try {
             const response = await fetch(endpoint, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({
-                    id: '1',
-                    jsonrpc: '2.0',
-                    method: 'getMasterchainInfo',
-                    params: {},
-                }),
+                body: JSON.stringify(requestBody),
                 signal: controller.signal,
             });
 
@@ -527,60 +501,8 @@ export class HealthChecker {
 
             data = await response.json();
 
-            let info: MasterchainInfo;
-
-            // Handle different response formats
-            if (data && typeof data === 'object') {
-                const dataObj = data as Record<string, unknown>;
-                
-                // Handle wrapped response { ok: true, result: ... } (GetBlock, some providers)
-                if ('ok' in dataObj) {
-                    if (!dataObj.ok) {
-                        const error = (dataObj as { error?: string }).error;
-                        throw new Error(error || 'API returned ok=false');
-                    }
-                    const result = (dataObj as { result?: unknown }).result;
-                    info = (result || dataObj) as MasterchainInfo;
-                }
-                // Handle JSON-RPC response { result: ... } (standard JSON-RPC)
-                else if ('result' in dataObj) {
-                    info = (dataObj as { result: unknown }).result as MasterchainInfo;
-                }
-                // Handle direct response (some providers return data directly)
-                else if ('last' in dataObj || '@type' in dataObj) {
-                    info = dataObj as unknown as MasterchainInfo;
-                }
-                // Handle error response { error: ... }
-                else if ('error' in dataObj) {
-                    const errorObj = dataObj.error as { message?: string; code?: string } | string;
-                    const errorMsg = typeof errorObj === 'string' 
-                        ? errorObj 
-                        : errorObj?.message || errorObj?.code || String(errorObj);
-                    throw new Error(`API error: ${errorMsg}`);
-                }
-                // Unknown format
-                else {
-                    throw new Error(`Unknown response format from ${provider.type}`);
-                }
-            } else {
-                throw new Error(`Invalid response type: ${typeof data}`);
-            }
-
-            // Validate response structure
-            if (!info || typeof info !== 'object') {
-                // Log the actual response for debugging
-                this.logger.debug(`Invalid response structure from ${provider.type}: ${JSON.stringify(data)}`);
-                throw new Error('Invalid response structure');
-            }
-
-            // Validate seqno exists and is valid (blocks start from 1)
-            const infoObj = info as { last?: { seqno?: number } };
-            const seqno = infoObj.last?.seqno;
-            if (seqno === undefined || seqno === null || seqno <= 0 || !Number.isInteger(seqno)) {
-                // Log the actual response for debugging
-                this.logger.debug(`Invalid seqno from ${provider.type}:`, { seqno, info });
-                throw new Error(`Invalid seqno: ${seqno} (must be positive integer)`);
-            }
+            // Parse response using provider-specific implementation
+            const info = providerImpl.parseMasterchainInfo(data);
 
             return info;
         } catch (error: any) {

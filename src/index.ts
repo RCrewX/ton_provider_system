@@ -229,3 +229,22 @@ export {
     DEFAULT_HEALTH_CHECK_TIMEOUT_MS,
     type RetryOptions,
 } from './utils';
+
+// ============================================================================
+// Provider-Specific Implementations (Advanced Usage)
+// ============================================================================
+
+export {
+    // Provider factory
+    createProvider,
+    // Provider classes
+    BaseProvider,
+    ChainstackProvider,
+    TatumProvider,
+    OnFinalityProvider,
+    QuickNodeProvider,
+    GetBlockProvider,
+    TonCenterProvider,
+    OrbsProvider,
+    GenericProvider,
+} from './providers';

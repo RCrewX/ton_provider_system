@@ -150,7 +150,9 @@ export class HealthChecker {
                     error.message?.includes('backend error')
                 ) {
                     this.logger.debug(`OnFinality /rpc failed, retrying with /public endpoint`);
-                    const publicEndpoint = normalizedEndpoint.replace('/rpc', '/public');
+                    // Remove query params (including apikey) for /public endpoint
+                    const baseUrl = normalizedEndpoint.split('?')[0];
+                    const publicEndpoint = baseUrl.replace('/rpc', '/public');
                     const publicProvider = { ...provider, apiKey: undefined };
                     const publicProviderImpl = createProvider(publicProvider);
                     info = await this.callGetMasterchainInfo(publicEndpoint, publicProvider, publicProviderImpl);

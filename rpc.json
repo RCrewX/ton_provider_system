@@ -80,7 +80,7 @@
       "rps": 4,
       "priority": 5,
       "enabled": true,
-      "description": "OnFinality testnet - 4 RPS free tier. Uses /rpc endpoint with API key in header (apikey header). If no API key is set, falls back to /public endpoint (rate-limited). Query params in URL are automatically removed."
+      "description": "OnFinality testnet - 4 RPS free tier. Uses /rpc endpoint with API key in query parameter (?apikey=KEY). If no API key is set, falls back to /public endpoint (rate-limited). OnFinality requires API key in query params, NOT headers."
     },
     "tatum_testnet": {
       "name": "Tatum Testnet",

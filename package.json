@@ -1,6 +1,6 @@
 {
   "name": "ton-provider-system",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "A bullet-proof TON RPC provider management system with automatic failover, health checking, and rate limiting",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -28,6 +28,8 @@
     "test": "tsx src/test.ts",
     "test:quick": "tsx src/test.ts --quick",
     "test:verbose": "tsx src/test.ts --verbose",
+    "browser-test": "tsx scripts/browser-test.ts",
+    "browser-test:verbose": "tsx scripts/browser-test.ts --verbose",
     "prepublishOnly": "pnpm build"
   },
   "keywords": [

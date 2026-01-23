@@ -99,6 +99,7 @@ export class HealthChecker {
             seqno: null,
             blocksBehind: 0,
             lastTested: null,
+            browserCompatible: provider.browserCompatible,
         };
         this.results.set(key, testingResult);
 
@@ -191,6 +192,7 @@ export class HealthChecker {
                 blocksBehind,
                 lastTested: new Date(),
                 cachedEndpoint: normalizedEndpoint,
+                browserCompatible: provider.browserCompatible,
             };
 
             this.results.set(key, result);
@@ -204,6 +206,9 @@ export class HealthChecker {
             const latencyMs = Math.round(endTime - startTime);
 
             const errorMsg = error.message || String(error) || 'Unknown error';
+
+            // Detect CORS errors (browser compatibility issue)
+            const isCorsError = this.isCorsError(error, errorMsg);
 
             // Detect specific HTTP status codes
             const is429 = errorMsg.includes('429') || errorMsg.toLowerCase().includes('rate limit');
@@ -226,6 +231,10 @@ export class HealthChecker {
                 status = 'offline';
             }
 
+            // Browser compatibility: if CORS error detected, mark as incompatible
+            // Otherwise, use provider's configured browserCompatible flag
+            const browserCompatible = isCorsError ? false : provider.browserCompatible;
+
             const result: ProviderHealthResult = {
                 id: provider.id,
                 network: provider.network,
@@ -236,6 +245,7 @@ export class HealthChecker {
                 blocksBehind: 0,
                 lastTested: new Date(),
                 error: errorMsg,
+                browserCompatible,
             };
 
             this.results.set(key, result);
@@ -345,6 +355,7 @@ export class HealthChecker {
             status: 'degraded',
             error: error || 'Marked as degraded',
             lastTested: new Date(),
+            browserCompatible: existing.browserCompatible ?? true,
         } : {
             id: providerId,
             network,
@@ -355,6 +366,7 @@ export class HealthChecker {
             blocksBehind: 0,
             lastTested: new Date(),
             error: error || 'Marked as degraded',
+            browserCompatible: true, // Default to compatible if unknown
         };
 
         this.results.set(key, result);
@@ -373,6 +385,7 @@ export class HealthChecker {
             success: false, // Ensure success is false for offline providers
             error: error || 'Marked as offline',
             lastTested: new Date(),
+            browserCompatible: existing.browserCompatible ?? true,
         } : {
             id: providerId,
             network,
@@ -383,6 +396,7 @@ export class HealthChecker {
             blocksBehind: 0,
             lastTested: new Date(),
             error: error || 'Marked as offline',
+            browserCompatible: true, // Default to compatible if unknown
         };
 
         this.results.set(key, result);
@@ -577,6 +591,43 @@ export class HealthChecker {
 
     private sleep(ms: number): Promise<void> {
         return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    /**
+     * Detect CORS errors (browser compatibility issues)
+     * 
+     * CORS errors occur when:
+     * - Request header field is not allowed by Access-Control-Allow-Headers
+     * - Specifically, x-ton-client-version header is blocked by some providers
+     * - Error message contains "CORS", "Access-Control", or "x-ton-client-version"
+     */
+    private isCorsError(error: any, errorMsg: string): boolean {
+        const msg = errorMsg.toLowerCase();
+        
+        // Check for CORS-related error messages
+        if (
+            msg.includes('cors') ||
+            msg.includes('access-control') ||
+            msg.includes('x-ton-client-version') ||
+            msg.includes('not allowed by access-control-allow-headers') ||
+            msg.includes('blocked by cors policy')
+        ) {
+            return true;
+        }
+
+        // Check for network errors that might be CORS-related
+        // (CORS errors often manifest as generic network errors in browsers)
+        if (
+            error.name === 'TypeError' &&
+            (msg.includes('failed to fetch') || msg.includes('network error'))
+        ) {
+            // Additional check: if this is in a browser environment and the error
+            // is a network error, it might be CORS (but we can't be 100% sure)
+            // We'll be conservative and only mark as CORS if explicitly mentioned
+            return false; // Don't assume network errors are CORS
+        }
+
+        return false;
     }
 }
 

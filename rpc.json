@@ -93,7 +93,8 @@
       "rps": 3,
       "priority": 8,
       "enabled": true,
-      "description": "Tatum testnet gateway - 3 RPS free plan. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_TESTNET."
+      "browserCompatible": false,
+      "description": "Tatum testnet gateway - 3 RPS free plan. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_TESTNET. Not compatible with browser due to CORS restrictions."
     },
     "tatum_mainnet": {
       "name": "Tatum Mainnet",
@@ -106,7 +107,8 @@
       "rps": 3,
       "priority": 8,
       "enabled": true,
-      "description": "Tatum mainnet gateway - 3 RPS free plan. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_MAINNET."
+      "browserCompatible": false,
+      "description": "Tatum mainnet gateway - 3 RPS free plan. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_MAINNET. Not compatible with browser due to CORS restrictions."
     },
     "orbs_testnet": {
       "name": "Orbs TON Access Testnet",

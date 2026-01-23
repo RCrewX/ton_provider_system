@@ -69,6 +69,7 @@ export class ProviderSelector {
     private healthChecker: HealthChecker;
     private config: SelectionConfig;
     private logger: Logger;
+    private adapter: 'node' | 'browser';
 
     // Selection state
     private selectedProviderId: string | null = null;
@@ -82,12 +83,14 @@ export class ProviderSelector {
         registry: ProviderRegistry,
         healthChecker: HealthChecker,
         config?: Partial<SelectionConfig>,
-        logger?: Logger
+        logger?: Logger,
+        adapter: 'node' | 'browser' = 'node'
     ) {
         this.registry = registry;
         this.healthChecker = healthChecker;
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.logger = logger || consoleLogger;
+        this.adapter = adapter;
     }
 
     // ========================================================================
@@ -149,9 +152,22 @@ export class ProviderSelector {
      * Find the best provider for a network (recalculates)
      */
     findBestProvider(network: Network): ResolvedProvider | null {
-        const providers = this.registry.getProvidersForNetwork(network);
+        let providers = this.registry.getProvidersForNetwork(network);
+        
+        // Filter browser-incompatible providers when running in browser
+        if (this.adapter === 'browser') {
+            const beforeCount = providers.length;
+            providers = this.filterBrowserCompatible(providers, network);
+            const filteredCount = beforeCount - providers.length;
+            if (filteredCount > 0) {
+                this.logger.debug(
+                    `Filtered out ${filteredCount} browser-incompatible provider(s) for ${network}`
+                );
+            }
+        }
+        
         if (providers.length === 0) {
-            this.logger.warn(`No providers available for ${network}`);
+            this.logger.warn(`No browser-compatible providers available for ${network}`);
             return null;
         }
 
@@ -266,7 +282,12 @@ export class ProviderSelector {
      * Get all available providers for a network, sorted by score
      */
     getAvailableProviders(network: Network): ResolvedProvider[] {
-        const providers = this.registry.getProvidersForNetwork(network);
+        let providers = this.registry.getProvidersForNetwork(network);
+        
+        // Filter browser-incompatible providers when running in browser
+        if (this.adapter === 'browser') {
+            providers = this.filterBrowserCompatible(providers, network);
+        }
 
         return providers
             .map((provider) => ({
@@ -285,7 +306,12 @@ export class ProviderSelector {
         network: Network,
         excludeIds: string[]
     ): ResolvedProvider | null {
-        const providers = this.registry.getProvidersForNetwork(network);
+        let providers = this.registry.getProvidersForNetwork(network);
+        
+        // Filter browser-incompatible providers when running in browser
+        if (this.adapter === 'browser') {
+            providers = this.filterBrowserCompatible(providers, network);
+        }
 
         const available = providers
             .filter((p) => !excludeIds.includes(p.id))
@@ -547,7 +573,41 @@ export class ProviderSelector {
             rps: 10,
             priority: 0,
             isDynamic: false,
+            browserCompatible: true, // Custom endpoints are assumed compatible
         };
+    }
+
+    /**
+     * Filter providers to only include browser-compatible ones
+     * 
+     * Checks both:
+     * 1. Provider config browserCompatible flag
+     * 2. Health check result browserCompatible flag (if health check was performed)
+     */
+    private filterBrowserCompatible(
+        providers: ResolvedProvider[],
+        network: Network
+    ): ResolvedProvider[] {
+        return providers.filter((provider) => {
+            // Check provider config flag
+            if (!provider.browserCompatible) {
+                this.logger.debug(
+                    `Provider ${provider.id} marked as browser-incompatible in config`
+                );
+                return false;
+            }
+
+            // Check health check result (if available)
+            const health = this.healthChecker.getResult(provider.id, network);
+            if (health && health.browserCompatible === false) {
+                this.logger.debug(
+                    `Provider ${provider.id} marked as browser-incompatible by health check (CORS error detected)`
+                );
+                return false;
+            }
+
+            return true;
+        });
     }
 }
 
@@ -562,7 +622,8 @@ export function createSelector(
     registry: ProviderRegistry,
     healthChecker: HealthChecker,
     config?: Partial<SelectionConfig>,
-    logger?: Logger
+    logger?: Logger,
+    adapter: 'node' | 'browser' = 'node'
 ): ProviderSelector {
-    return new ProviderSelector(registry, healthChecker, config, logger);
+    return new ProviderSelector(registry, healthChecker, config, logger, adapter);
 }

@@ -186,7 +186,8 @@ export class ProviderManager {
             this.registry,
             this.healthChecker,
             undefined,
-            this.options.logger
+            this.options.logger,
+            this.options.adapter
         );
 
         this.initialized = true;
@@ -526,7 +527,27 @@ export class ProviderManager {
      */
     getProviders(): ResolvedProvider[] {
         if (!this.initialized || !this.network) return [];
-        return this.registry!.getProvidersForNetwork(this.network);
+        let providers = this.registry!.getProvidersForNetwork(this.network);
+        
+        // Filter browser-incompatible providers when running in browser
+        if (this.options.adapter === 'browser') {
+            providers = providers.filter((provider) => {
+                // Check provider config flag
+                if (!provider.browserCompatible) {
+                    return false;
+                }
+                
+                // Check health check result (if available)
+                const health = this.healthChecker!.getResult(provider.id, this.network!);
+                if (health && health.browserCompatible === false) {
+                    return false;
+                }
+                
+                return true;
+            });
+        }
+        
+        return providers;
     }
 
     /**
@@ -580,6 +601,7 @@ export class ProviderManager {
                         seqno: null,
                         blocksBehind: 0,
                         lastTested: null,
+                        browserCompatible: provider.browserCompatible,
                     },
                     rateLimit: rateLimit || {
                         tokens: 0,

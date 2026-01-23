@@ -122,6 +122,7 @@ export function resolveProvider(id: string, config: ProviderConfig): ResolvedPro
         rps: config.rps,
         priority: config.priority,
         isDynamic: config.isDynamic || false,
+        browserCompatible: config.browserCompatible !== undefined ? config.browserCompatible : true,
     };
 }
 

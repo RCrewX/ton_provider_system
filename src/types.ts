@@ -78,6 +78,8 @@ export interface ProviderConfig {
     enabled: boolean;
     /** Whether this provider requires dynamic endpoint discovery (e.g., Orbs) */
     isDynamic?: boolean;
+    /** Whether this provider is compatible with browser environments (default: true) */
+    browserCompatible?: boolean;
     /** Optional description or notes */
     description?: string;
 }
@@ -141,6 +143,8 @@ export interface ResolvedProvider {
     priority: number;
     /** Whether dynamic discovery is needed */
     isDynamic: boolean;
+    /** Whether this provider is compatible with browser environments */
+    browserCompatible: boolean;
 }
 
 /**
@@ -167,6 +171,8 @@ export interface ProviderHealthResult {
     cachedEndpoint?: string;
     /** Error message if failed */
     error?: string;
+    /** Whether this provider is compatible with browser environments */
+    browserCompatible: boolean;
 }
 
 /**

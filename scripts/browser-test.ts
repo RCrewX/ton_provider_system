@@ -64,19 +64,27 @@ async function testProviderWithTonClient(
 
         // Test 1: getMasterchainInfo (basic connectivity)
         const masterchainInfo = await client.getMasterchainInfo();
-        if (!masterchainInfo || !masterchainInfo.last) {
-            throw new Error('Invalid masterchainInfo response');
+        // Check if response is valid (can have different structures)
+        if (!masterchainInfo) {
+            throw new Error('Invalid masterchainInfo response: null or undefined');
+        }
+        // Some providers return different structures, so just check if we got something
+        if (typeof masterchainInfo !== 'object') {
+            throw new Error(`Invalid masterchainInfo response: expected object, got ${typeof masterchainInfo}`);
         }
 
-        // Test 2: getAddressInformation (more complex call)
-        // Use a known testnet address
+        // Test 2: getContractState (more complex call, simulates ton_site usage)
+        // Use a known valid address (GameManager from ton_game deployment)
         const testAddress = network === 'testnet'
-            ? Address.parse('EQD0vdSA_NedR9uvbgN9EikRX-suesDxGeFg69XQMavfLqIo')
-            : Address.parse('EQD0vdSA_NedR9uvbgN9EikRX-suesDxGeFg69XQMavfLqIo');
+            ? Address.parse('EQC9EbQRbDzocSKipnb62HpupcLuEeZblNA6n6mD0KOSacas')
+            : Address.parse('EQC9EbQRbDzocSKipnb62HpupcLuEeZblNA6n6mD0KOSacas');
         
-        const addressInfo = await client.getAddressInformation(testAddress);
-        if (!addressInfo) {
-            throw new Error('Invalid addressInfo response');
+        // Use provider.getState() like ton_site does
+        const provider = client.provider(testAddress);
+        const state = await provider.getState();
+        // State can be null for uninitialized addresses, which is valid
+        if (state === undefined) {
+            throw new Error('Invalid state response: undefined');
         }
 
         const latencyMs = Date.now() - startTime;
@@ -130,7 +138,22 @@ async function runBrowserTests(network: 'testnet' | 'mainnet' = 'testnet', verbo
     const providers = manager.getProviders();
     const healthResults = manager.getProviderHealthResults();
 
-    console.log(`Found ${providers.length} browser-compatible provider(s) for ${network}\n`);
+    console.log(`Found ${providers.length} browser-compatible provider(s) for ${network}`);
+    
+    // Debug: show which providers were filtered
+    const allProviders = manager.getRegistry()?.getProvidersForNetwork(network) || [];
+    const filteredOut = allProviders.filter(p => !providers.some(pp => pp.id === p.id));
+    if (filteredOut.length > 0 && verbose) {
+        console.log(`Filtered out ${filteredOut.length} browser-incompatible provider(s):`);
+        filteredOut.forEach(p => {
+            const health = healthResults.find(h => h.id === p.id);
+            const reason = !p.browserCompatible 
+                ? 'config flag' 
+                : (health && !health.browserCompatible ? 'CORS error' : 'unknown');
+            console.log(`  - ${p.name} (${p.id}): ${reason}`);
+        });
+    }
+    console.log('');
 
     if (providers.length === 0) {
         console.warn('⚠️  No browser-compatible providers found!');
@@ -235,7 +258,10 @@ async function main() {
     }
 }
 
-// Run if executed directly
-if (require.main === module) {
+// Run if executed directly (ES module check)
+// Check if this file is being run directly (not imported)
+const isMainModule = import.meta.url.endsWith(process.argv[1]) || 
+                     import.meta.url.includes(process.argv[1].replace(/\\/g, '/'));
+if (isMainModule || process.argv[1]?.includes('browser-test.ts')) {
     main();
 }

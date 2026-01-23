@@ -69,6 +69,7 @@ export const ProviderConfigSchema = z.object({
     priority: z.number().int().nonnegative().default(10),
     enabled: z.boolean().default(true),
     isDynamic: z.boolean().optional().default(false),
+    browserCompatible: z.boolean().optional(),
     description: z.string().optional(),
 });
 

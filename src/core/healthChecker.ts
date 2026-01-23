@@ -349,16 +349,19 @@ export class HealthChecker {
 
     /**
      * Mark a provider as degraded (e.g., on 429 error)
+     * 
+     * Providers marked as degraded have failed health checks (e.g., rate limit errors)
+     * and should not be selected. The system will failover to the next available provider.
      */
     markDegraded(providerId: string, network: Network, error?: string): void {
         const key = this.getResultKey(providerId, network);
         const existing = this.results.get(key);
 
-        // Degraded providers are still functional (e.g., 429 rate limit)
-        // They should have success: true so they can still be used, just with lower priority
+        // Degraded providers have failed (e.g., 429 rate limit errors)
+        // They should have success: false so they are not selected and system fails over
         const result: ProviderHealthResult = existing ? {
             ...existing,
-            success: true, // Degraded providers are still usable, just slower/rate-limited
+            success: false, // Degraded providers with errors should not be selected
             status: 'degraded',
             error: error || 'Marked as degraded',
             lastTested: new Date(),
@@ -366,7 +369,7 @@ export class HealthChecker {
         } : {
             id: providerId,
             network,
-            success: true, // Degraded providers are still usable
+            success: false, // Degraded providers with errors should not be selected
             status: 'degraded',
             latencyMs: null,
             seqno: null,

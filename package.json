@@ -1,6 +1,6 @@
 {
   "name": "ton-provider-system",
-  "version": "0.1.13",
+  "version": "0.2.1",
   "description": "A bullet-proof TON RPC provider management system with automatic failover, health checking, and rate limiting",
   "type": "module",
   "main": "./dist/index.cjs",

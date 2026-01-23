@@ -101,14 +101,44 @@ async function testProviderWithTonClient(
         const latencyMs = Date.now() - startTime;
         const errorMsg = error.message || String(error) || 'Unknown error';
         
-        // Detect CORS errors
+        // Detect CORS errors (browser-specific)
+        // Note: This test runs in Node.js, so real CORS errors won't occur.
+        // CORS is a browser security feature. However, we can detect CORS-related error messages
+        // that might be logged or returned by some providers.
         const isCorsError = 
             errorMsg.toLowerCase().includes('cors') ||
             errorMsg.toLowerCase().includes('access-control') ||
             errorMsg.toLowerCase().includes('x-ton-client-version') ||
             errorMsg.toLowerCase().includes('not allowed by access-control-allow-headers') ||
             errorMsg.toLowerCase().includes('blocked by cors policy') ||
-            (error.name === 'TypeError' && errorMsg.toLowerCase().includes('failed to fetch'));
+            errorMsg.toLowerCase().includes('preflight') ||
+            (error.name === 'TypeError' && 
+             errorMsg.toLowerCase().includes('failed to fetch') &&
+             !errorMsg.toLowerCase().includes('enotfound') && // DNS errors are not CORS
+             !errorMsg.toLowerCase().includes('econnrefused')); // Connection refused is not CORS
+        
+        // Network/DNS errors are NOT browser incompatibility issues
+        // They indicate infrastructure problems, not CORS restrictions
+        const isNetworkError = 
+            errorMsg.toLowerCase().includes('enotfound') ||
+            errorMsg.toLowerCase().includes('econnrefused') ||
+            errorMsg.toLowerCase().includes('getaddrinfo') ||
+            errorMsg.toLowerCase().includes('dns') ||
+            errorMsg.toLowerCase().includes('network error') ||
+            errorMsg.toLowerCase().includes('timeout');
+        
+        // Server errors (5xx) are NOT browser incompatibility
+        const isServerError = 
+            errorMsg.includes('503') ||
+            errorMsg.includes('502') ||
+            errorMsg.includes('500') ||
+            errorMsg.toLowerCase().includes('service unavailable') ||
+            errorMsg.toLowerCase().includes('bad gateway') ||
+            errorMsg.toLowerCase().includes('backend error');
+        
+        // Only mark as browser-incompatible if it's actually a CORS error
+        // Network/server errors should still be marked as compatible (they work in browsers when servers are up)
+        const browserCompatible = !isCorsError;
 
         return {
             providerId,
@@ -128,7 +158,10 @@ async function testProviderWithTonClient(
 async function runBrowserTests(network: 'testnet' | 'mainnet' = 'testnet', verbose: boolean = false): Promise<void> {
     console.log(`\n${'='.repeat(80)}`);
     console.log(`Browser Compatibility Test - ${network.toUpperCase()}`);
-    console.log(`${'='.repeat(80)}\n`);
+    console.log(`${'='.repeat(80)}`);
+    console.log(`\n⚠️  NOTE: This test runs in Node.js, so real CORS errors won't be detected.`);
+    console.log(`   CORS is a browser security feature. This test verifies providers work with TonClient.`);
+    console.log(`   Real CORS testing must be done in an actual browser environment.\n`);
 
     // Initialize provider manager in browser mode
     const manager = new ProviderManager({ adapter: 'browser' });
@@ -143,13 +176,13 @@ async function runBrowserTests(network: 'testnet' | 'mainnet' = 'testnet', verbo
     // Debug: show which providers were filtered
     const allProviders = manager.getRegistry()?.getProvidersForNetwork(network) || [];
     const filteredOut = allProviders.filter(p => !providers.some(pp => pp.id === p.id));
-    if (filteredOut.length > 0 && verbose) {
+    if (filteredOut.length > 0) {
         console.log(`Filtered out ${filteredOut.length} browser-incompatible provider(s):`);
         filteredOut.forEach(p => {
             const health = healthResults.find(h => h.id === p.id);
             const reason = !p.browserCompatible 
-                ? 'config flag' 
-                : (health && !health.browserCompatible ? 'CORS error' : 'unknown');
+                ? 'config flag (browserCompatible: false)' 
+                : (health && health.browserCompatible === false ? 'CORS error detected' : 'unknown');
             console.log(`  - ${p.name} (${p.id}): ${reason}`);
         });
     }
@@ -170,11 +203,31 @@ async function runBrowserTests(network: 'testnet' | 'mainnet' = 'testnet', verbo
             console.log(`Testing ${provider.name} (${provider.id})...`);
         }
 
-        const endpoint = await manager.getEndpoint();
+        // Use provider's specific endpoint, not the manager's selected one
+        // For dynamic providers (Orbs), get the actual endpoint
+        let endpoint = provider.endpointV2;
+        if (provider.isDynamic && provider.type === 'orbs') {
+            try {
+                const { getHttpEndpoint } = await import('@orbs-network/ton-access');
+                endpoint = await getHttpEndpoint({ network: provider.network });
+                if (verbose) {
+                    console.log(`   Orbs endpoint discovered: ${endpoint}`);
+                }
+            } catch (error: any) {
+                // If Orbs discovery fails, test with fallback static endpoint
+                // This is a network/infrastructure issue, not browser incompatibility
+                console.log(`⚠️  ${provider.name}: Orbs discovery failed, using fallback endpoint`);
+                console.log(`   Error: ${error.message}`);
+                console.log(`   Note: This is a network/infrastructure issue, not browser incompatibility`);
+                // Use the static endpoint from config as fallback
+                endpoint = provider.endpointV2;
+            }
+        }
+
         const result = await testProviderWithTonClient(
             provider.id,
             provider.name,
-            provider.endpointV2,
+            endpoint,
             network
         );
 
@@ -184,8 +237,21 @@ async function runBrowserTests(network: 'testnet' | 'mainnet' = 'testnet', verbo
         if (result.success) {
             console.log(`✅ ${provider.name}: SUCCESS (${result.latencyMs}ms)`);
         } else {
+            // Categorize the error type
+            const errorMsg = result.error?.toLowerCase() || '';
+            let errorType = 'UNKNOWN';
+            if (errorMsg.includes('cors') || errorMsg.includes('access-control')) {
+                errorType = 'CORS (Browser Incompatible)';
+            } else if (errorMsg.includes('enotfound') || errorMsg.includes('getaddrinfo') || errorMsg.includes('dns')) {
+                errorType = 'Network/DNS Error';
+            } else if (errorMsg.includes('503') || errorMsg.includes('502') || errorMsg.includes('service unavailable')) {
+                errorType = 'Server Error (5xx)';
+            } else {
+                errorType = 'Other Error';
+            }
+            
             const compatStatus = result.browserCompatible ? 'COMPATIBLE' : 'INCOMPATIBLE (CORS)';
-            console.log(`❌ ${provider.name}: FAILED - ${compatStatus}`);
+            console.log(`❌ ${provider.name}: FAILED - ${compatStatus} [${errorType}]`);
             if (verbose || !result.browserCompatible) {
                 console.log(`   Error: ${result.error}`);
             }

@@ -5,9 +5,9 @@
  * Designed for use in React/Next.js applications.
  */
 
-import type { Network, ResolvedProvider, Logger, ProviderHealthResult } from '../types';
+import type { Network, Logger, ProviderHealthResult } from '../types';
 import { ProviderManager } from '../core/manager';
-import { normalizeV2Endpoint, toV2Base } from '../utils/endpoint';
+import { toV2Base } from '../utils/endpoint';
 
 // ============================================================================
 // Console Logger (default)
@@ -62,13 +62,15 @@ export class BrowserAdapter {
 
     /**
      * Make a JSON-RPC call to the TON API
+     * 
+     * Note: Uses rate limiting to prevent 429 errors.
      */
     async jsonRpc<T = unknown>(
         method: string,
         params: Record<string, unknown> = {},
         timeoutMs: number = 10000
     ): Promise<T> {
-        const endpoint = await this.manager.getEndpoint();
+        const endpoint = await this.manager.getEndpointWithRateLimit(timeoutMs);
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -117,12 +119,14 @@ export class BrowserAdapter {
 
     /**
      * Get address state
+     * 
+     * Note: Uses rate limiting to prevent 429 errors.
      */
     async getAddressState(
         address: string,
         timeoutMs: number = 10000
     ): Promise<'uninit' | 'active' | 'frozen'> {
-        const endpoint = await this.manager.getEndpoint();
+        const endpoint = await this.manager.getEndpointWithRateLimit(timeoutMs);
         const baseV2 = toV2Base(endpoint);
         const url = `${baseV2}/getAddressState?address=${encodeURIComponent(address)}`;
 
@@ -160,12 +164,14 @@ export class BrowserAdapter {
 
     /**
      * Get address balance
+     * 
+     * Note: Uses rate limiting to prevent 429 errors.
      */
     async getAddressBalance(
         address: string,
         timeoutMs: number = 10000
     ): Promise<bigint> {
-        const endpoint = await this.manager.getEndpoint();
+        const endpoint = await this.manager.getEndpointWithRateLimit(timeoutMs);
         const baseV2 = toV2Base(endpoint);
         const url = `${baseV2}/getAddressBalance?address=${encodeURIComponent(address)}`;
 
@@ -203,6 +209,8 @@ export class BrowserAdapter {
 
     /**
      * Get address information
+     * 
+     * Note: Uses rate limiting to prevent 429 errors.
      */
     async getAddressInfo(
         address: string,
@@ -213,7 +221,7 @@ export class BrowserAdapter {
         lastTransactionLt?: string;
         lastTransactionHash?: string;
     }> {
-        const endpoint = await this.manager.getEndpoint();
+        const endpoint = await this.manager.getEndpointWithRateLimit(timeoutMs);
         const baseV2 = toV2Base(endpoint);
         const url = `${baseV2}/getAddressInformation?address=${encodeURIComponent(address)}`;
 
@@ -248,6 +256,8 @@ export class BrowserAdapter {
 
     /**
      * Run get method
+     * 
+     * Note: Uses rate limiting to prevent 429 errors.
      */
     async runGetMethod(
         address: string,
@@ -255,7 +265,7 @@ export class BrowserAdapter {
         stack: unknown[] = [],
         timeoutMs: number = 15000
     ): Promise<{ exit_code: number; stack: unknown[] }> {
-        const endpoint = await this.manager.getEndpoint();
+        const endpoint = await this.manager.getEndpointWithRateLimit(timeoutMs);
         const baseV2 = toV2Base(endpoint);
         const url = `${baseV2}/runGetMethod`;
 

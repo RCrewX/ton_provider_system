@@ -141,6 +141,16 @@ export class TokenBucketRateLimiter {
         // If already processing, wait in queue
         if (this.processing) {
             const acquired = await new Promise<boolean>((resolve) => {
+                let timeoutInterval: NodeJS.Timeout | null = null;
+                let resolved = false;
+
+                const cleanup = () => {
+                    if (timeoutInterval !== null) {
+                        clearInterval(timeoutInterval);
+                        timeoutInterval = null;
+                    }
+                };
+
                 const checkTimeout = () => {
                     if (Date.now() - startTime > timeoutMs) {
                         // Remove from queue and reject
@@ -148,25 +158,26 @@ export class TokenBucketRateLimiter {
                         if (idx >= 0) {
                             this.requestQueue.splice(idx, 1);
                         }
-                        resolve(false);
+                        if (!resolved) {
+                            resolved = true;
+                            cleanup();
+                            resolve(false);
+                        }
                     }
                 };
 
-                const resolveCallback = () => resolve(true);
+                const resolveCallback = () => {
+                    if (!resolved) {
+                        resolved = true;
+                        cleanup();
+                        resolve(true);
+                    }
+                };
+
                 this.requestQueue.push(resolveCallback);
 
                 // Set timeout to check periodically
-                const timeoutInterval = setInterval(checkTimeout, 1000);
-                const cleanup = () => clearInterval(timeoutInterval);
-
-                // Cleanup when resolved
-                Promise.resolve().then(() => {
-                    if (this.requestQueue.includes(resolveCallback)) {
-                        // Still in queue, wait for resolution
-                    } else {
-                        cleanup();
-                    }
-                });
+                timeoutInterval = setInterval(checkTimeout, 1000);
             });
 
             if (!acquired) {
@@ -178,19 +189,17 @@ export class TokenBucketRateLimiter {
         this.processing = true;
 
         try {
-            // Refill tokens
-            this.refill();
-
-            // Apply backoff if active
+            // Apply backoff if active (before refilling tokens)
             if (this.currentBackoff > 0) {
                 this.logger.debug(`Applying backoff: ${this.currentBackoff}ms`);
                 await sleep(this.currentBackoff);
-                // After backoff, reset lastRefill to ensure proper delay calculation
-                // This prevents getting tokens too quickly after backoff
+                // After backoff, update lastRefill to track when backoff completed
+                // This ensures proper token refill calculation after backoff
                 this.lastRefill = Date.now();
-                // Clear backoff after applying it (it will be set again if we get another 429)
-                this.currentBackoff = 0;
             }
+
+            // Refill tokens (after backoff if it was applied)
+            this.refill();
 
             // Wait for token if none available
             while (this.tokens <= 0) {
@@ -198,26 +207,26 @@ export class TokenBucketRateLimiter {
                     return false;
                 }
 
-                // Wait for minimum delay
-                await sleep(Math.min(100, this.config.minDelayMs));
+                // Wait for minimum delay (use smaller increments for better responsiveness)
+                const waitTime = Math.min(100, this.config.minDelayMs);
+                await sleep(waitTime);
                 this.refill();
             }
 
             // Consume token
             this.tokens--;
 
-            // Apply minimum delay between requests (always enforce for rate limiting)
-            // For very low RPS providers, we must always enforce the delay to prevent 429 errors
-            // After backoff, we still need to ensure minDelayMs has passed since lastRefill
+            // Apply minimum delay between requests (CRITICAL for rate limiting)
+            // For very low RPS providers (e.g., 3 RPS = 334ms), we must strictly enforce minDelayMs
+            // This ensures we don't exceed the provider's rate limit
             const timeSinceLastRefill = Date.now() - this.lastRefill;
             if (timeSinceLastRefill < this.config.minDelayMs) {
-                await sleep(this.config.minDelayMs - timeSinceLastRefill);
+                const remainingDelay = this.config.minDelayMs - timeSinceLastRefill;
+                await sleep(remainingDelay);
             }
-            // Note: If timeSinceLastRefill >= minDelayMs, we've already waited long enough
-            // due to the token refill mechanism, so no additional delay is needed
-            // However, we still update lastRefill to track when this request was made
 
-            // Update lastRefill AFTER the delay to ensure accurate timing for next request
+            // Update lastRefill AFTER consuming token and applying delay
+            // This ensures the next request will wait at least minDelayMs
             this.lastRefill = Date.now();
             return true;
         } finally {
@@ -239,10 +248,29 @@ export class TokenBucketRateLimiter {
     }
 
     /**
-     * Report a successful request (resets backoff)
+     * Report a successful request (gradually reduces backoff)
+     * 
+     * Instead of immediately clearing backoff, we gradually reduce it to prevent
+     * immediately hitting the rate limit again after a single success.
      */
     reportSuccess(): void {
-        this.currentBackoff = 0;
+        // Gradually reduce backoff on consecutive successes
+        // This prevents immediately hitting rate limit again after backoff
+        if (this.currentBackoff > 0) {
+            // Reduce backoff by 50% on each success, but don't go below minDelayMs
+            this.currentBackoff = Math.max(
+                this.config.minDelayMs,
+                Math.floor(this.currentBackoff / 2)
+            );
+            
+            // Only clear backoff completely after it's reduced to minDelayMs
+            // and we've had at least one successful request
+            if (this.currentBackoff <= this.config.minDelayMs) {
+                this.currentBackoff = 0;
+            }
+        }
+        
+        // Reset consecutive errors on success
         this.consecutiveErrors = 0;
     }
 

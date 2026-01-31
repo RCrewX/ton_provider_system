@@ -53,17 +53,23 @@ Or add to your `package.json`:
 ### Node.js (Scripts, Telegram Bot)
 
 ```typescript
-import { ProviderManager, getTonClient } from 'ton-provider-system';
+import { ProviderManager, getTonClient, NodeAdapter } from 'ton-provider-system';
 
 // Initialize
 const pm = ProviderManager.getInstance();
 await pm.init('testnet');
 
-// Get TonClient for blockchain operations
-const client = await getTonClient(pm);
+// Option 1: Use adapter (RECOMMENDED - handles rate limiting automatically)
+const adapter = new NodeAdapter(pm);
+const balance = await adapter.getAddressBalance(address);
+const state = await adapter.getAddressState(address);
 
-// Use the client
-const balance = await client.getBalance(address);
+// Option 2: Use TonClient with rate limiting
+const client = await getTonClient(pm);
+// Always use getEndpointWithRateLimit() before operations
+const endpoint = await pm.getEndpointWithRateLimit();
+// Note: TonClient doesn't automatically respect rate limits
+// Consider using adapter methods instead
 ```
 
 ### Browser (React/Next.js)
@@ -72,12 +78,16 @@ const balance = await client.getBalance(address);
 import { ProviderManager, BrowserAdapter } from 'ton-provider-system';
 
 // Create instance (not singleton for React)
+// IMPORTANT: Use 'browser' adapter to filter CORS-incompatible providers
 const pm = new ProviderManager({ adapter: 'browser' });
 await pm.init(network);
 
 // Use browser adapter for fetch-based operations
+// Adapter methods automatically handle rate limiting
 const adapter = new BrowserAdapter(pm);
 const balance = await adapter.getAddressBalance(address);
+const state = await adapter.getAddressState(address);
+const result = await adapter.runGetMethod(address, 'method', []);
 ```
 
 ## Configuration
@@ -140,10 +150,11 @@ const pm = new ProviderManager({ adapter: 'browser' });
 await pm.init('testnet');
 await pm.init('mainnet');
 
-// Get endpoint URL
+// Get endpoint URL (no rate limiting - use for one-off requests)
 const endpoint = await pm.getEndpoint();
 
-// Get endpoint with rate limiting
+// Get endpoint with rate limiting (RECOMMENDED for production)
+// Waits for rate limit token before returning endpoint
 const endpoint = await pm.getEndpointWithRateLimit(5000);
 
 // Test all providers
@@ -394,18 +405,104 @@ pnpm test:verbose
 
 ### No providers available
 
-1. Check `.env` file has API keys configured
-2. Run `pnpm check-connection` to test providers
+**Symptoms**: `No providers available, using fallback` warning
 
-### Rate limit errors
+**Solutions**:
+1. Check `.env` file has API keys configured for at least one provider
+2. Verify environment variables are loaded (use `dotenv` or similar)
+3. Run `pnpm test` to test all providers
+4. Check provider health: `const results = await pm.testAllProviders()`
 
-1. The system automatically switches to next provider on 429 errors
-2. Configure more providers in `.env` for redundancy
+### Rate limit errors (429)
+
+**Symptoms**: Frequent 429 errors, requests failing
+
+**Solutions**:
+1. **Use `getEndpointWithRateLimit()`** instead of `getEndpoint()` - this is the recommended approach
+2. Use adapter methods (`adapter.getAddressState()`) which automatically handle rate limiting
+3. The system automatically switches to next provider on 429 errors
+4. Configure more providers in `.env` for redundancy
+5. Check RPS limits in `rpc.json` - some providers have very low limits (e.g., Tatum: 3 RPS)
+
+**Example**:
+```typescript
+// ❌ BAD - bypasses rate limiting
+const endpoint = await pm.getEndpoint();
+const client = new TonClient({ endpoint });
+await client.getBalance(address); // May hit rate limit
+
+// ✅ GOOD - respects rate limiting
+const endpoint = await pm.getEndpointWithRateLimit();
+const client = new TonClient({ endpoint });
+await client.getBalance(address);
+
+// ✅ BEST - adapter handles everything
+const adapter = new NodeAdapter(pm);
+const balance = await adapter.getAddressBalance(address);
+```
 
 ### Block height mismatch (stale provider)
 
-1. Provider is returning old data
-2. System marks it as `stale` and prefers fresh providers
+**Symptoms**: Provider returns old block data
+
+**Solutions**:
+1. System automatically marks stale providers and prefers fresh ones
+2. Stale providers are still used if no fresh providers available
+3. Check provider health: `const health = pm.getHealthChecker()?.getResult(providerId, network)`
+
+### Provider failures (503, 502, timeout)
+
+**Symptoms**: Providers marked as offline, frequent failovers
+
+**Solutions**:
+1. These are usually temporary infrastructure issues
+2. System automatically fails over to next provider
+3. Failed providers are retried after cooldown period (default: 30 seconds)
+4. Check provider status: `const results = await pm.testAllProviders()`
+5. Permanent errors (404, 401) are not retried - check API keys
+
+### Browser compatibility (CORS errors)
+
+**Symptoms**: CORS errors in browser, providers not working
+
+**Solutions**:
+1. Use `BrowserAdapter` instead of direct `TonClient` in browser
+2. Some providers are not browser-compatible (e.g., Tatum) - they're automatically filtered
+3. Check browser compatibility: `const providers = pm.getProviders()` (already filtered)
+4. Use `adapter: 'browser'` when creating `ProviderManager` in browser environment
+
+**Example**:
+```typescript
+// ✅ Correct for browser
+const pm = new ProviderManager({ adapter: 'browser' });
+await pm.init('testnet');
+const adapter = new BrowserAdapter(pm);
+const balance = await adapter.getAddressBalance(address);
+```
+
+### Error handling and failover
+
+**Symptoms**: Need to handle provider failures gracefully
+
+**Solutions**:
+1. Always wrap operations in try-catch
+2. Call `pm.reportError(error)` on failures to trigger failover
+3. Call `pm.reportSuccess()` on success to update rate limiter
+4. System automatically fails over, but manual reporting improves accuracy
+
+**Example**:
+```typescript
+try {
+    const endpoint = await pm.getEndpointWithRateLimit();
+    const client = new TonClient({ endpoint });
+    const result = await client.someMethod();
+    pm.reportSuccess(); // Update rate limiter
+    return result;
+} catch (error) {
+    pm.reportError(error); // Trigger failover
+    throw error;
+}
+```
 
 ## Publishing
 

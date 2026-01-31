@@ -41,6 +41,8 @@ export interface SelectionConfig {
     freshnessWeight: number;
     /** Minimum acceptable provider status */
     minStatus: ProviderStatus[];
+    /** Cooldown period (ms) before retrying failed providers (default: 30000) */
+    retryCooldownMs: number;
 }
 
 const DEFAULT_CONFIG: SelectionConfig = {
@@ -49,6 +51,7 @@ const DEFAULT_CONFIG: SelectionConfig = {
     priorityWeight: 0.3,
     freshnessWeight: 0.3,
     minStatus: ['available', 'degraded'],
+    retryCooldownMs: 30000, // 30 seconds
 };
 
 // ============================================================================
@@ -205,18 +208,25 @@ export class ProviderSelector {
                     return defaultProvider;
                 }
                 
-                // Failed provider - check if cooldown expired
+                // Failed provider - check if error is retryable and cooldown expired
                 if (health.success === false && health.lastTested) {
-                    const timeSinceFailure = Date.now() - health.lastTested.getTime();
-                    const cooldownMs = 30000; // 30 seconds cooldown
-                    
-                    if (timeSinceFailure > cooldownMs) {
-                        // Cooldown expired - allow retry
-                        this.logger.warn(
-                            `No healthy providers for ${network}, retrying failed default after cooldown: ${defaultProvider.id}`
+                    // Only retry if error is retryable (not permanent errors like 404, 401)
+                    if (this.isRetryableError(health.error)) {
+                        const timeSinceFailure = Date.now() - health.lastTested.getTime();
+                        
+                        if (timeSinceFailure > this.config.retryCooldownMs) {
+                            // Cooldown expired - allow retry
+                            this.logger.warn(
+                                `No healthy providers for ${network}, retrying failed default after cooldown: ${defaultProvider.id}`
+                            );
+                            this.activeProviderByNetwork.set(network, defaultProvider.id);
+                            return defaultProvider;
+                        }
+                    } else {
+                        // Permanent error (404, 401, etc.) - don't retry
+                        this.logger.debug(
+                            `Skipping provider ${defaultProvider.id} with permanent error: ${health.error}`
                         );
-                        this.activeProviderByNetwork.set(network, defaultProvider.id);
-                        return defaultProvider;
                     }
                 }
                 // Still in cooldown - skip this provider
@@ -235,18 +245,25 @@ export class ProviderSelector {
                     return provider;
                 }
                 
-                // Failed provider - check if cooldown expired
+                // Failed provider - check if error is retryable and cooldown expired
                 if (health.success === false && health.lastTested) {
-                    const timeSinceFailure = Date.now() - health.lastTested.getTime();
-                    const cooldownMs = 30000; // 30 seconds cooldown
-                    
-                    if (timeSinceFailure > cooldownMs) {
-                        // Cooldown expired - allow retry
-                        this.logger.warn(
-                            `No healthy providers for ${network}, retrying failed provider after cooldown: ${provider.id}`
+                    // Only retry if error is retryable (not permanent errors like 404, 401)
+                    if (this.isRetryableError(health.error)) {
+                        const timeSinceFailure = Date.now() - health.lastTested.getTime();
+                        
+                        if (timeSinceFailure > this.config.retryCooldownMs) {
+                            // Cooldown expired - allow retry
+                            this.logger.warn(
+                                `No healthy providers for ${network}, retrying failed provider after cooldown: ${provider.id}`
+                            );
+                            this.activeProviderByNetwork.set(network, provider.id);
+                            return provider;
+                        }
+                    } else {
+                        // Permanent error (404, 401, etc.) - don't retry
+                        this.logger.debug(
+                            `Skipping provider ${provider.id} with permanent error: ${health.error}`
                         );
-                        this.activeProviderByNetwork.set(network, provider.id);
-                        return provider;
                     }
                 }
             }
@@ -260,11 +277,19 @@ export class ProviderSelector {
         const bestHealth = this.healthChecker.getResult(best.id, network);
         
         // Only cache and log if provider has been tested and is healthy
+        // CRITICAL: Never cache providers with success: false
         if (bestHealth && bestHealth.success === true) {
             this.bestProviderByNetwork.set(network, best.id);
             this.activeProviderByNetwork.set(network, best.id);
             this.logger.debug(
                 `Best provider for ${network}: ${best.id} (score: ${scored[0].score.toFixed(2)})`
+            );
+        } else if (bestHealth && bestHealth.success === false) {
+            // Provider failed - don't cache it, but track as active so we know which one failed
+            this.bestProviderByNetwork.delete(network); // Ensure cache is cleared
+            this.activeProviderByNetwork.set(network, best.id);
+            this.logger.debug(
+                `Best provider for ${network}: ${best.id} (score: ${scored[0].score.toFixed(2)}, failed - not cached)`
             );
         } else {
             // Don't cache untested providers, but still return them as fallback
@@ -347,20 +372,23 @@ export class ProviderSelector {
 
         // Providers that failed health check (success: false) - allow retry after cooldown
         // This allows providers to recover from temporary failures (503, network errors, etc.)
+        // but NOT from permanent errors (404, 401, invalid API key)
         if (health.success === false) {
-            // If last tested was more than 30 seconds ago, allow retry with very low score
-            // This gives providers a chance to recover from temporary failures
-            if (health.lastTested) {
-                const timeSinceFailure = Date.now() - health.lastTested.getTime();
-                const cooldownMs = 30000; // 30 seconds cooldown
-                
-                if (timeSinceFailure > cooldownMs) {
-                    // Cooldown expired - allow retry with very low score
-                    // Lower priority = higher score multiplier (inverse relationship)
-                    return 0.001 * (1 / (provider.priority + 1));
+            // Only retry if error is retryable (not permanent)
+            if (this.isRetryableError(health.error)) {
+                // If last tested was more than retryCooldownMs ago, allow retry with very low score
+                // This gives providers a chance to recover from temporary failures
+                if (health.lastTested) {
+                    const timeSinceFailure = Date.now() - health.lastTested.getTime();
+                    
+                    if (timeSinceFailure > this.config.retryCooldownMs) {
+                        // Cooldown expired - allow retry with very low score
+                        // Lower priority = higher score multiplier (inverse relationship)
+                        return 0.001 * (1 / (provider.priority + 1));
+                    }
                 }
             }
-            // Still in cooldown - don't use
+            // Permanent error or still in cooldown - don't use
             return 0;
         }
 
@@ -608,6 +636,61 @@ export class ProviderSelector {
 
             return true;
         });
+    }
+
+    /**
+     * Check if an error is retryable (temporary) or permanent
+     * 
+     * Permanent errors (never retry):
+     * - 404 (Not Found) - endpoint doesn't exist
+     * - 401 (Unauthorized) - invalid API key
+     * - Invalid API key errors
+     * 
+     * Retryable errors (can retry after cooldown):
+     * - 503 (Service Unavailable) - temporary server issue
+     * - 502 (Bad Gateway) - temporary gateway issue
+     * - Timeout errors - network issues
+     * - Network errors - connection issues
+     * - 429 (Rate Limit) - temporary rate limit (handled separately)
+     */
+    private isRetryableError(error: string | null | undefined): boolean {
+        if (!error) {
+            return true; // Unknown error - assume retryable
+        }
+
+        const errorLower = error.toLowerCase();
+
+        // Permanent errors - never retry
+        if (
+            errorLower.includes('404') ||
+            errorLower.includes('not found') ||
+            errorLower.includes('401') ||
+            errorLower.includes('unauthorized') ||
+            errorLower.includes('invalid api key') ||
+            errorLower.includes('api key is invalid') ||
+            errorLower.includes('authentication failed') ||
+            errorLower.includes('forbidden')
+        ) {
+            return false;
+        }
+
+        // Retryable errors - can retry after cooldown
+        if (
+            errorLower.includes('503') ||
+            errorLower.includes('service unavailable') ||
+            errorLower.includes('502') ||
+            errorLower.includes('bad gateway') ||
+            errorLower.includes('timeout') ||
+            errorLower.includes('network error') ||
+            errorLower.includes('connection') ||
+            errorLower.includes('econnrefused') ||
+            errorLower.includes('enotfound')
+        ) {
+            return true;
+        }
+
+        // Default: assume retryable for unknown errors
+        return true;
     }
 }
 

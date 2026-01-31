@@ -351,11 +351,24 @@ export class ProviderManager {
         // Acquire rate limit token
         const acquired = await this.rateLimiter!.acquire(provider.id, timeoutMs);
         if (!acquired) {
-            this.options.logger.warn(`Rate limit timeout for ${provider.id}`);
+            // Rate limit token acquisition timed out - report as error for this provider
+            const timeoutError = new Error(`Rate limit token acquisition timeout for ${provider.id} after ${timeoutMs || 60000}ms`);
+            this.options.logger.warn(timeoutError.message);
+            
+            // Report timeout as error to trigger failover
+            this.reportError(timeoutError);
+            
             // Try next provider
             const next = this.selector!.getNextProvider(this.network!, [provider.id]);
             if (next) {
-                return normalizeV2Endpoint(next.endpointV2, next);
+                // Try to acquire token for next provider (with reduced timeout to avoid long waits)
+                const nextTimeout = timeoutMs ? Math.min(timeoutMs, 10000) : 10000;
+                const nextAcquired = await this.rateLimiter!.acquire(next.id, nextTimeout);
+                if (nextAcquired) {
+                    return normalizeV2Endpoint(next.endpointV2, next);
+                }
+                // Next provider also timed out - fall back to public endpoint
+                this.options.logger.warn(`Rate limit timeout for next provider ${next.id}, using fallback`);
             }
             return this.getFallbackEndpoint();
         }
@@ -419,35 +432,85 @@ export class ProviderManager {
             provider = this.selector!.getBestProvider(this.network);
         }
         
-        if (!provider) return;
+        if (!provider) {
+            this.options.logger.warn(`Cannot report error: no provider available for ${this.network}`);
+            return;
+        }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
         const errorMsgLower = errorMsg.toLowerCase();
+        
+        // Enhanced error message with provider context
+        const enhancedErrorMsg = `Provider ${provider.id} (${provider.name}): ${errorMsg}`;
 
-        // Detect error types to determine how to mark the provider
-        const is429 = errorMsgLower.includes('429') || errorMsgLower.includes('rate limit');
-        const is503 = errorMsgLower.includes('503') || errorMsgLower.includes('service unavailable');
-        const is502 = errorMsgLower.includes('502') || errorMsgLower.includes('bad gateway');
-        const is404 = errorMsgLower.includes('404') || errorMsgLower.includes('not found');
-        const isTimeout = errorMsgLower.includes('timeout') || errorMsgLower.includes('abort');
+        // Detect error types - check both error object properties and message
+        // Check error object properties first (more reliable)
+        const responseStatus = (error instanceof Error && (error as any)?.response?.status) || 
+                              (error instanceof Error && (error as any)?.status) || 
+                              (error instanceof Error && (error as any)?.statusCode) ||
+                              null;
+        
+        // Extract status code from error message as fallback
+        const statusMatch = errorMsg.match(/\b(\d{3})\b/);
+        const statusFromMsg = statusMatch ? parseInt(statusMatch[1], 10) : null;
+        const httpStatus = responseStatus || statusFromMsg;
+
+        // Determine error types using both status code and message
+        const is429 = httpStatus === 429 || 
+                     errorMsgLower.includes('429') || 
+                     errorMsgLower.includes('rate limit') ||
+                     errorMsgLower.includes('too many requests');
+        const is503 = httpStatus === 503 || 
+                     errorMsgLower.includes('503') || 
+                     errorMsgLower.includes('service unavailable');
+        const is502 = httpStatus === 502 || 
+                     errorMsgLower.includes('502') || 
+                     errorMsgLower.includes('bad gateway');
+        const is404 = httpStatus === 404 || 
+                     errorMsgLower.includes('404') || 
+                     errorMsgLower.includes('not found');
+        const is401 = httpStatus === 401 || 
+                     errorMsgLower.includes('401') || 
+                     errorMsgLower.includes('unauthorized') ||
+                     errorMsgLower.includes('invalid api key') ||
+                     errorMsgLower.includes('authentication failed');
+        const isTimeout = error instanceof Error && error.name === 'AbortError' ||
+                         errorMsgLower.includes('timeout') || 
+                         errorMsgLower.includes('timed out') ||
+                         errorMsgLower.includes('abort');
 
         if (isRateLimitError(error) || is429) {
+            // Rate limit error - mark as degraded (temporary)
             this.rateLimiter!.reportRateLimitError(provider.id);
-            this.healthChecker!.markDegraded(provider.id, this.network, errorMsg);
-        } else if (is503 || is502 || is404 || isTimeout) {
-            // Server errors, timeouts, and not found should mark provider as offline
+            this.healthChecker!.markDegraded(provider.id, this.network, enhancedErrorMsg);
+            this.options.logger.warn(`${enhancedErrorMsg} - Rate limit detected, switching to next provider`);
+        } else if (is404 || is401) {
+            // Permanent errors - endpoint doesn't exist or auth failed
             this.rateLimiter!.reportError(provider.id);
-            this.healthChecker!.markOffline(provider.id, this.network, errorMsg);
+            this.healthChecker!.markOffline(provider.id, this.network, enhancedErrorMsg);
+            this.options.logger.error(`${enhancedErrorMsg} - Permanent error (${is404 ? '404' : '401'}), provider marked offline`);
+        } else if (is503 || is502 || isTimeout) {
+            // Server errors and timeouts - mark as offline (temporary but severe)
+            this.rateLimiter!.reportError(provider.id);
+            this.healthChecker!.markOffline(provider.id, this.network, enhancedErrorMsg);
+            const errorType = is503 ? '503' : is502 ? '502' : 'timeout';
+            this.options.logger.warn(`${enhancedErrorMsg} - Server error (${errorType}), switching to next provider`);
         } else {
-            // Other errors - mark as degraded
+            // Other errors - mark as degraded (unknown severity)
             this.rateLimiter!.reportError(provider.id);
-            this.healthChecker!.markDegraded(provider.id, this.network, errorMsg);
+            this.healthChecker!.markDegraded(provider.id, this.network, enhancedErrorMsg);
+            this.options.logger.warn(`${enhancedErrorMsg} - Unknown error, switching to next provider`);
         }
 
         // CRITICAL: Clear cache and switch to next provider immediately
         // This ensures the next getEndpoint() call gets a different provider
+        const nextProvider = this.selector!.handleProviderFailure(provider.id, this.network);
+        if (nextProvider) {
+            this.options.logger.info(`Failover: switched from ${provider.id} to ${nextProvider.id}`);
+        } else {
+            this.options.logger.warn(`Failover: no alternative provider available for ${this.network}`);
+        }
         this.selector!.clearCache(this.network);
-        this.selector!.handleProviderFailure(provider.id, this.network);
         this.notifyListeners();
     }
 

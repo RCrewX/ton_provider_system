@@ -215,29 +215,64 @@ export class HealthChecker {
             const latencyMs = Math.round(endTime - startTime);
 
             const errorMsg = error.message || String(error) || 'Unknown error';
+            const errorMsgLower = errorMsg.toLowerCase();
 
             // Detect CORS errors (browser compatibility issue)
             const isCorsError = this.isCorsError(error, errorMsg);
 
-            // Detect specific HTTP status codes
-            const is429 = errorMsg.includes('429') || errorMsg.toLowerCase().includes('rate limit');
-            const is404 = errorMsg.includes('404') || errorMsg.toLowerCase().includes('not found');
-            const is503 = errorMsg.includes('503') || errorMsg.toLowerCase().includes('service unavailable');
-            const is502 = errorMsg.includes('502') || errorMsg.toLowerCase().includes('bad gateway');
-            const isTimeout = error.name === 'AbortError' || errorMsg.includes('timeout');
+            // Detect specific HTTP status codes (check both message and response object)
+            // Check error object properties first (more reliable)
+            const responseStatus = (error as any)?.response?.status || 
+                                  (error as any)?.status || 
+                                  (error as any)?.statusCode ||
+                                  null;
+            
+            // Extract status code from error message as fallback
+            const statusMatch = errorMsg.match(/\b(\d{3})\b/);
+            const statusFromMsg = statusMatch ? parseInt(statusMatch[1], 10) : null;
+            const httpStatus = responseStatus || statusFromMsg;
+
+            // Determine error types using both status code and message
+            const is429 = httpStatus === 429 || 
+                        errorMsgLower.includes('429') || 
+                        errorMsgLower.includes('rate limit') ||
+                        errorMsgLower.includes('too many requests');
+            const is404 = httpStatus === 404 || 
+                         errorMsgLower.includes('404') || 
+                         errorMsgLower.includes('not found');
+            const is401 = httpStatus === 401 || 
+                         errorMsgLower.includes('401') || 
+                         errorMsgLower.includes('unauthorized') ||
+                         errorMsgLower.includes('invalid api key') ||
+                         errorMsgLower.includes('authentication failed');
+            const is403 = httpStatus === 403 || 
+                         errorMsgLower.includes('403') || 
+                         errorMsgLower.includes('forbidden');
+            const is503 = httpStatus === 503 || 
+                         errorMsgLower.includes('503') || 
+                         errorMsgLower.includes('service unavailable');
+            const is502 = httpStatus === 502 || 
+                         errorMsgLower.includes('502') || 
+                         errorMsgLower.includes('bad gateway');
+            const isTimeout = error.name === 'AbortError' || 
+                             errorMsgLower.includes('timeout') ||
+                             errorMsgLower.includes('timed out') ||
+                             errorMsgLower.includes('aborted');
             
             // Detect OnFinality backend errors
             const isOnFinalityBackendError = provider.type === 'onfinality' && 
-                (errorMsg.includes('Backend error') || errorMsg.includes('backend error'));
+                (errorMsgLower.includes('backend error') || errorMsgLower.includes('backend error'));
 
             // Determine status based on error type
             let status: ProviderStatus = 'offline';
             if (is429) {
-                status = 'degraded';
-            } else if (is404 || is503 || is502 || isOnFinalityBackendError) {
-                status = 'offline'; // Service unavailable or backend errors
+                status = 'degraded'; // Rate limit - degraded but might recover
+            } else if (is404 || is401 || is403) {
+                status = 'offline'; // Permanent errors - endpoint doesn't exist or auth failed
+            } else if (is503 || is502 || isOnFinalityBackendError) {
+                status = 'offline'; // Service unavailable or backend errors - temporary but severe
             } else if (isTimeout) {
-                status = 'offline';
+                status = 'offline'; // Timeout - network issue
             }
 
             // Browser compatibility: if CORS error detected, mark as incompatible
@@ -269,11 +304,12 @@ export class HealthChecker {
      * 
      * @param batchSize - Number of providers to test in parallel (default: 2)
      * @param batchDelayMs - Delay between batches in milliseconds (default: 500 to avoid rate limits)
+     *                       If not provided, calculates delay based on lowest RPS in batch
      */
     async testProviders(
         providers: ResolvedProvider[],
         batchSize: number = 2,
-        batchDelayMs: number = 500
+        batchDelayMs?: number
     ): Promise<ProviderHealthResult[]> {
         const results: ProviderHealthResult[] = [];
 
@@ -285,8 +321,19 @@ export class HealthChecker {
             results.push(...batchResults);
 
             // Add delay between batches (except for last batch)
-            if (i + batchSize < providers.length && batchDelayMs > 0) {
-                await this.sleep(batchDelayMs);
+            if (i + batchSize < providers.length) {
+                // Calculate delay based on lowest RPS in current batch if not provided
+                let delay = batchDelayMs;
+                if (delay === undefined) {
+                    // Find minimum RPS in batch
+                    const minRps = Math.min(...batch.map(p => p.rps || 1));
+                    // Use 1.5x the minimum delay for safety (e.g., 3 RPS = 334ms, use 500ms)
+                    delay = Math.max(500, Math.ceil((1000 / minRps) * 1.5));
+                }
+                
+                if (delay > 0) {
+                    await this.sleep(delay);
+                }
             }
         }
 

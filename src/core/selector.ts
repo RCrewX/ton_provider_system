@@ -14,6 +14,7 @@ import type {
 } from '../types';
 import { ProviderRegistry } from './registry';
 import { HealthChecker } from './healthChecker';
+import { redactUrl } from '../utils/endpoint';
 
 // ============================================================================
 // Console Logger (default)
@@ -500,7 +501,7 @@ export class ProviderSelector {
      */
     setCustomEndpoint(endpoint: string | null): void {
         this.customEndpoint = endpoint?.trim() || null;
-        this.logger.info(`Custom endpoint: ${this.customEndpoint || '(none)'}`);
+        this.logger.info(`Custom endpoint: ${this.customEndpoint ? redactUrl(this.customEndpoint) : '(none)'}`);
     }
 
     /**

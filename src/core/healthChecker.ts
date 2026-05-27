@@ -15,7 +15,7 @@ import type {
     Logger,
     TimeoutError,
 } from '../types';
-import { normalizeV2Endpoint } from '../utils/endpoint';
+import { normalizeV2Endpoint, redactUrl } from '../utils/endpoint';
 import { createProvider } from '../providers';
 import type { RateLimiterManager } from './rateLimiter';
 
@@ -64,6 +64,8 @@ export class HealthChecker {
     private logger: Logger;
     private results: Map<string, ProviderHealthResult> = new Map();
     private highestSeqno: Map<Network, number> = new Map();
+    /** Rolling window of recent valid seqnos per network (for outlier-robust blocksBehind). */
+    private seqnoSamples: Map<Network, number[]> = new Map();
     private rateLimiter: RateLimiterManager | null = null;
 
     constructor(
@@ -129,34 +131,53 @@ export class HealthChecker {
             }
 
             // Normalize endpoint using provider-specific implementation
-            const normalizedEndpoint = providerImpl.normalizeEndpoint(endpoint);
-            
-            // Debug logging for OnFinality
+            let normalizedEndpoint = providerImpl.normalizeEndpoint(endpoint);
+
+            // Debug logging for OnFinality (endpoint redacted to avoid leaking the API key)
             if (provider.type === 'onfinality') {
-                this.logger.debug(`OnFinality endpoint: ${endpoint} -> ${normalizedEndpoint}, API key: ${provider.apiKey ? 'set' : 'not set'}`);
+                this.logger.debug(`OnFinality endpoint: ${redactUrl(endpoint)} -> ${redactUrl(normalizedEndpoint)}, API key: ${provider.apiKey ? 'set' : 'not set'}`);
             }
 
-            // Call getMasterchainInfo with provider-specific handling
-            // For OnFinality, if /rpc fails, it will automatically retry with /public
-            let info: MasterchainInfo;
-            try {
-                info = await this.callGetMasterchainInfo(normalizedEndpoint, provider, providerImpl);
-            } catch (error: any) {
-                // If OnFinality /rpc fails with backend error and we have an API key, try /public
-                if (
-                    provider.type === 'onfinality' &&
-                    normalizedEndpoint.includes('/rpc') &&
-                    provider.apiKey &&
-                    error.message?.includes('backend error')
-                ) {
-                    this.logger.debug(`OnFinality /rpc failed, retrying with /public endpoint`);
-                    // Remove query params (including apikey) for /public endpoint
-                    const baseUrl = normalizedEndpoint.split('?')[0];
-                    const publicEndpoint = baseUrl.replace('/rpc', '/public');
-                    const publicProvider = { ...provider, apiKey: undefined };
-                    const publicProviderImpl = createProvider(publicProvider);
-                    info = await this.callGetMasterchainInfo(publicEndpoint, publicProvider, publicProviderImpl);
-                } else {
+            // Call getMasterchainInfo with provider-specific handling.
+            // - OnFinality: if /rpc fails with a backend error, retry with /public.
+            // - Orbs (dynamic): a discovered gateway sometimes serves an HTML error
+            //   page; re-discover a fresh gateway and retry a bounded number of times (P2-3).
+            const orbsRetries = provider.isDynamic && provider.type === 'orbs' ? 2 : 0;
+            let info!: MasterchainInfo;
+            for (let attempt = 0; ; attempt++) {
+                try {
+                    info = await this.callGetMasterchainInfo(normalizedEndpoint, provider, providerImpl);
+                    break;
+                } catch (error: any) {
+                    // If OnFinality /rpc fails with backend error and we have an API key, try /public
+                    if (
+                        provider.type === 'onfinality' &&
+                        normalizedEndpoint.includes('/rpc') &&
+                        provider.apiKey &&
+                        error.message?.includes('backend error')
+                    ) {
+                        this.logger.debug(`OnFinality /rpc failed, retrying with /public endpoint`);
+                        // Remove query params (including apikey) for /public endpoint
+                        const baseUrl = normalizedEndpoint.split('?')[0];
+                        const publicEndpoint = baseUrl.replace('/rpc', '/public');
+                        const publicProvider = { ...provider, apiKey: undefined };
+                        const publicProviderImpl = createProvider(publicProvider);
+                        info = await this.callGetMasterchainInfo(publicEndpoint, publicProvider, publicProviderImpl);
+                        break;
+                    }
+
+                    // Orbs: re-discover a fresh gateway on a non-JSON / HTML error and retry
+                    if (attempt < orbsRetries && this.isNonJsonResponseError(error)) {
+                        this.logger.debug(
+                            `Orbs gateway returned a non-JSON response; re-discovering endpoint (retry ${attempt + 1}/${orbsRetries})`
+                        );
+                        const freshEndpoint = await this.getEndpoint(provider);
+                        if (freshEndpoint) {
+                            normalizedEndpoint = providerImpl.normalizeEndpoint(freshEndpoint);
+                            continue;
+                        }
+                    }
+
                     throw error;
                 }
             }
@@ -174,14 +195,18 @@ export class HealthChecker {
                 throw new Error('Invalid seqno in response (must be positive integer)');
             }
 
-            // Update highest known seqno for this network
+            // Update highest known seqno for this network (kept for getHighestSeqno())
             const currentHighest = this.highestSeqno.get(provider.network) || 0;
             if (seqno > currentHighest) {
                 this.highestSeqno.set(provider.network, seqno);
             }
 
-            // Calculate blocks behind
-            const blocksBehind = Math.max(0, (this.highestSeqno.get(provider.network) || seqno) - seqno);
+            // Calculate blocks behind using an outlier-robust baseline (median of
+            // recent valid seqnos) rather than the raw maximum, so a single provider
+            // reporting an anomalous seqno cannot falsely mark healthy providers as
+            // `stale`. See remediation P2-2.
+            const baselineSeqno = this.recordSeqnoAndGetBaseline(provider.network, seqno);
+            const blocksBehind = Math.max(0, baselineSeqno - seqno);
 
             // Determine status
             let status: ProviderStatus = 'available';
@@ -394,6 +419,7 @@ export class HealthChecker {
     clearResults(): void {
         this.results.clear();
         this.highestSeqno.clear();
+        this.seqnoSamples.clear();
     }
 
     /**
@@ -467,6 +493,41 @@ export class HealthChecker {
 
     private getResultKey(providerId: string, network: Network): string {
         return `${providerId}-${network}`;
+    }
+
+    /**
+     * Record a valid seqno sample and return an outlier-robust freshness baseline
+     * (median of recent samples for the network). Using the median instead of the
+     * raw maximum prevents a single provider that reports an inflated seqno from
+     * poisoning `blocksBehind` for every other (healthy) provider. See P2-2.
+     */
+    private recordSeqnoAndGetBaseline(network: Network, seqno: number): number {
+        const samples = this.seqnoSamples.get(network) ?? [];
+        samples.push(seqno);
+        // Bounded rolling window
+        if (samples.length > 20) {
+            samples.shift();
+        }
+        this.seqnoSamples.set(network, samples);
+
+        const sorted = [...samples].sort((a, b) => a - b);
+        // Lower-middle for even counts → conservative: a single high outlier never
+        // pulls the baseline above the healthy cluster.
+        const mid = Math.floor((sorted.length - 1) / 2);
+        return sorted[mid];
+    }
+
+    /**
+     * Detect a "non-JSON response" error (e.g. an HTML error page returned by a
+     * misbehaving gateway), used to decide whether to re-discover an Orbs endpoint.
+     */
+    private isNonJsonResponseError(error: unknown): boolean {
+        const msg = ((error as { message?: string })?.message || String(error) || '').toLowerCase();
+        return (
+            msg.includes('invalid response type') ||
+            msg.includes('expected json') ||
+            msg.includes('got text/html')
+        );
     }
 
     /**

@@ -369,3 +369,72 @@ export function isValidWsUrl(str: string): boolean {
         return false;
     }
 }
+
+// ============================================================================
+// Redaction (safe logging)
+// ============================================================================
+
+/**
+ * Heuristic: does a URL segment look like an opaque credential/token?
+ * Matches long hex strings, UUIDs, and long opaque alphanumeric tokens.
+ */
+function isCredentialLike(segment: string): boolean {
+    return (
+        /^[0-9a-f]{16,}$/i.test(segment) || // hex API keys (e.g. Chainstack/GetBlock)
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment) || // UUID
+        /^[A-Za-z0-9_-]{20,}$/.test(segment) // long opaque token (e.g. QuickNode subdomain)
+    );
+}
+
+/**
+ * Redact credentials from an endpoint URL so it is safe to log.
+ *
+ * Masks (a) sensitive query-param values (`apikey`, `api_key`, `key`, `token`,
+ * `secret`, `password`), (b) credential-like path segments while preserving
+ * structural ones (`api`, `v2`, `v3`, `jsonRPC`, `rpc`, `public`, …), and
+ * (c) a credential-like leading host label (e.g. a QuickNode subdomain key).
+ *
+ * For logging only — never use the result to make requests.
+ */
+export function redactUrl(url: string): string {
+    const MASK = '***';
+    const SENSITIVE_PARAM = /^(apikey|api[-_]?key|key|token|secret|password)$/i;
+    const STRUCTURAL = new Set([
+        'api', 'v1', 'v2', 'v3', 'v4', 'jsonrpc', 'rpc', 'public', 'ws',
+        'testnet', 'mainnet', 'toncenter-api-v2',
+    ]);
+
+    try {
+        const u = new URL(url);
+
+        // (a) sensitive query params
+        for (const name of Array.from(u.searchParams.keys())) {
+            if (SENSITIVE_PARAM.test(name)) {
+                u.searchParams.set(name, MASK);
+            }
+        }
+
+        // (b) credential-like path segments
+        u.pathname = u.pathname
+            .split('/')
+            .map((seg) =>
+                seg && !STRUCTURAL.has(seg.toLowerCase()) && isCredentialLike(seg) ? MASK : seg
+            )
+            .join('/');
+
+        // (c) credential-like leading host label (QuickNode subdomain key)
+        const hostParts = u.hostname.split('.');
+        if (hostParts.length > 2 && isCredentialLike(hostParts[0])) {
+            hostParts[0] = MASK;
+            u.hostname = hostParts.join('.');
+        }
+
+        return u.toString();
+    } catch {
+        // Not a parseable URL: best-effort mask of obvious `key=...` query parts
+        return url.replace(
+            /\b(apikey|api[-_]?key|key|token|secret|password)=[^&\s]+/gi,
+            `$1=${MASK}`
+        );
+    }
+}

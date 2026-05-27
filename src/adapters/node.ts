@@ -9,7 +9,7 @@ import { TonClient } from '@ton/ton';
 import { Address, Cell } from '@ton/core';
 import type { Network, ResolvedProvider, Logger } from '../types';
 import { ProviderManager } from '../core/manager';
-import { normalizeV2Endpoint, toV2Base } from '../utils/endpoint';
+import { normalizeV2Endpoint, toV2Base, redactUrl } from '../utils/endpoint';
 import { withTimeout, fetchWithTimeout, sleep } from '../utils/timeout';
 
 // ============================================================================
@@ -105,7 +105,7 @@ export class NodeAdapter {
             createdAt: Date.now(),
         };
 
-        this.logger.debug(`Created TonClient for ${network}`, { endpoint });
+        this.logger.debug(`Created TonClient for ${network}`, { endpoint: redactUrl(endpoint) });
 
         return client;
     }

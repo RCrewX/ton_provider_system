@@ -1,6 +1,6 @@
 {
   "name": "ton-provider-system",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "A bullet-proof TON RPC provider management system with automatic failover, health checking, and rate limiting",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -48,8 +48,8 @@
   "packageManager": "pnpm@10.24.0",
   "peerDependencies": {
     "@orbs-network/ton-access": "^2.3.0",
-    "@ton/core": "^0.59.0",
-    "@ton/ton": "^15.0.0"
+    "@ton/core": "^0.59.0 || ^0.63.0",
+    "@ton/ton": "^15.0.0 || ^16.0.0"
   },
   "dependencies": {
     "zod": "^3.23.8"
@@ -57,8 +57,8 @@
   "devDependencies": {
     "@eslint/js": "^9.39.2",
     "@orbs-network/ton-access": "^2.3.0",
-    "@ton/core": "^0.59.0",
-    "@ton/ton": "^15.0.0",
+    "@ton/core": "^0.63.0",
+    "@ton/ton": "^16.0.0",
     "@types/node": "^25.0.10",
     "dotenv": "^16.4.5",
     "eslint": "^9.39.2",

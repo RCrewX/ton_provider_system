@@ -213,6 +213,7 @@ export {
     detectNetworkFromEndpoint,
     isValidHttpUrl,
     isValidWsUrl,
+    redactUrl,
 
     // Timeout utilities
     withTimeout,

@@ -300,7 +300,13 @@ export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
             v2: 'https://testnet.toncenter.com/api/v2',
         },
         rps: 1, // Without API key
-        priority: 100,
+        // Preferred on testnet: Toncenter serves the full v2 surface incl.
+        // getTransactions (curl-proven 200). Orbs only proxies liteserver
+        // get-methods/state and 403s on getTransactions, so it must NOT be the
+        // primary testnet provider (it stays a fallback for get-method reads).
+        // Selection is score-based and priority is the lever (lower = better),
+        // so this gives Toncenter the testnet edge over Orbs (priority 90).
+        priority: 10,
         enabled: true,
         description: 'Official TON Center public endpoint',
     },
@@ -312,7 +318,9 @@ export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
             v2: 'https://ton-testnet.orbs.network/api/v2',
         },
         rps: 10,
-        priority: 50,
+        // Demoted below toncenter_testnet (priority 10): Orbs is the decentralised
+        // fallback for non-transaction (get-method/state) testnet reads only.
+        priority: 90,
         enabled: true,
         isDynamic: true,
         description: 'Decentralized gateway - no API key needed',
@@ -352,7 +360,12 @@ export function createDefaultConfig(): RpcConfig {
         version: '1.0',
         providers: { ...DEFAULT_PROVIDERS },
         defaults: {
-            testnet: ['orbs_testnet', 'toncenter_testnet'],
+            // Testnet: Toncenter first (transactions-capable), Orbs as fallback.
+            // This default order only governs the no-healthy-providers fallback
+            // path; the primary, score-based selection is driven by priority
+            // (see toncenter_testnet/orbs_testnet above). Mainnet order is left
+            // unchanged (Orbs stays primary there — no regression).
+            testnet: ['toncenter_testnet', 'orbs_testnet'],
             mainnet: ['orbs_mainnet', 'toncenter_mainnet'],
         },
     };

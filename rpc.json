@@ -25,7 +25,7 @@
       },
       "apiKeyEnvVar": "TONCENTER_API_KEY",
       "rps": 10,
-      "priority": 50,
+      "priority": 5,
       "enabled": true,
       "description": "Official TON Center testnet - 10 RPS with API key, 1 RPS without"
     },
@@ -118,7 +118,7 @@
         "v2": "https://ton-testnet.orbs.network/api/v2"
       },
       "rps": 10,
-      "priority": 10,
+      "priority": 90,
       "enabled": true,
       "isDynamic": true,
       "description": "Orbs decentralized gateway - no hard limit, uses dynamic discovery"

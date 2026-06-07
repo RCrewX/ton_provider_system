@@ -23,11 +23,13 @@
 
 import {
     createDefaultConfig,
+    DEFAULT_PROVIDERS,
     ProviderRegistry,
     createSelector,
     HealthChecker,
     type Network,
     type ProviderHealthResult,
+    type RpcConfig,
     type Logger,
 } from './index';
 
@@ -99,6 +101,21 @@ function stubHealthChecker(seed: ProviderHealthResult[]): HealthChecker {
     for (const r of seed) {
         results.set(`${r.id}-${r.network}`, r);
     }
+    const stub = {
+        getResult: (providerId: string, network: Network): ProviderHealthResult | undefined =>
+            results.get(`${providerId}-${network}`),
+    };
+    return stub as unknown as HealthChecker;
+}
+
+/**
+ * Like `stubHealthChecker`, but backed by a caller-owned, MUTABLE result map so a
+ * test can flip a provider's health mid-run (to simulate a getTransactions 403
+ * marking it success:false, exactly as manager.reportError → markDegraded does).
+ */
+function mutableStubHealthChecker(
+    results: Map<string, ProviderHealthResult>,
+): HealthChecker {
     const stub = {
         getResult: (providerId: string, network: Network): ProviderHealthResult | undefined =>
             results.get(`${providerId}-${network}`),
@@ -182,6 +199,95 @@ console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n'
         'mainnet primary remains orbs_mainnet',
         best?.id === 'orbs_mainnet',
         `selected: ${best?.id ?? 'none'}`,
+    );
+}
+
+// Test 4 — getTransactions failover ENUMERATION (the NodeAdapter.getTransactions
+// fix). This mirrors the real runtime config (rpc.json), where chainstack_testnet
+// is priority-1 best and passes the getMasterchainInfo health probe, but 403s on
+// the v2 getTransactions call. The new NodeAdapter.getTransactions loop reacts to
+// that 403 by calling manager.reportError() (→ markDegraded, success:false +
+// cache clear) and re-picking — so selection must walk PAST the incapable best
+// provider and land on a transaction-capable one (toncenter_testnet). This test
+// reproduces that walk at the selector level (offline): a "403" marks the picked
+// provider success:false, then we re-pick, until a capable provider is reached.
+{
+    console.log(
+        '\nTest 4: getTransactions failover walks past a healthy-but-incapable best provider',
+    );
+
+    // Config that matches the rpc.json shape: chainstack priority-1 best (403s on
+    // getTransactions), toncenter priority-5 (capable), orbs priority-90 fallback.
+    const cfg: RpcConfig = {
+        version: '1.0',
+        providers: {
+            chainstack_testnet: {
+                name: 'Chainstack Testnet',
+                type: 'chainstack',
+                network: 'testnet',
+                // Static endpoint (no {key}) so it resolves offline with no env.
+                endpoints: { v2: 'https://ton-testnet.core.chainstack.com/test/api/v2' },
+                rps: 25,
+                priority: 1,
+                enabled: true,
+            },
+            toncenter_testnet: { ...DEFAULT_PROVIDERS.toncenter_testnet },
+            orbs_testnet: { ...DEFAULT_PROVIDERS.orbs_testnet },
+        },
+        defaults: {
+            testnet: ['chainstack_testnet', 'toncenter_testnet', 'orbs_testnet'],
+            mainnet: [],
+        },
+    };
+
+    const registry = new ProviderRegistry(cfg, silentLogger);
+    const results = new Map<string, ProviderHealthResult>();
+    // All three pass the health probe (getMasterchainInfo) — the bug is precisely
+    // that health ≠ getTransactions capability.
+    results.set('chainstack_testnet-testnet', healthy('chainstack_testnet', 'testnet', 30));
+    results.set('toncenter_testnet-testnet', healthy('toncenter_testnet', 'testnet', 400));
+    results.set('orbs_testnet-testnet', healthy('orbs_testnet', 'testnet', 50));
+
+    const checker = mutableStubHealthChecker(results);
+    const selector = createSelector(registry, checker, undefined, silentLogger);
+
+    // Providers that 403 on getTransactions despite a passing health probe.
+    const incapable = new Set(['chainstack_testnet', 'orbs_testnet']);
+    const tried: string[] = [];
+    let landed: string | null = null;
+
+    for (let i = 0; i < 5; i++) {
+        const best = selector.getBestProvider('testnet');
+        if (!best || tried.includes(best.id)) break;
+        tried.push(best.id);
+        if (!incapable.has(best.id)) {
+            landed = best.id; // capable provider → getTransactions succeeds
+            break;
+        }
+        // Simulate the 403 failover step: manager.reportError → markDegraded sets
+        // success:false (a 'forbidden' error scores 0 within cooldown), then the
+        // selection cache is cleared so the next pick differs.
+        results.set(
+            `${best.id}-testnet`,
+            offline(best.id, 'testnet', `Provider ${best.id}: HTTP 403 Forbidden`),
+        );
+        selector.clearCache('testnet');
+    }
+
+    check(
+        'best provider tried first is chainstack_testnet (priority 1)',
+        tried[0] === 'chainstack_testnet',
+        `first tried: ${tried[0] ?? 'none'}`,
+    );
+    check(
+        'failover lands on a transaction-capable provider (toncenter_testnet)',
+        landed === 'toncenter_testnet',
+        `landed: ${landed ?? 'none'}`,
+    );
+    check(
+        'the incapable best provider was tried and then excluded',
+        tried.includes('chainstack_testnet') && landed !== 'chainstack_testnet',
+        `tried: [${tried.join(', ')}], landed: ${landed ?? 'none'}`,
     );
 }
 

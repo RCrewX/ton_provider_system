@@ -7,6 +7,7 @@
 
 import { TonClient } from '@ton/ton';
 import { Address, Cell } from '@ton/core';
+import type { Transaction } from '@ton/core';
 import type { Network, ResolvedProvider, Logger } from '../types';
 import { ProviderManager } from '../core/manager';
 import { normalizeV2Endpoint, toV2Base, redactUrl } from '../utils/endpoint';
@@ -143,6 +144,108 @@ export class NodeAdapter {
             network: cachedClient.network,
             age: Date.now() - cachedClient.createdAt,
         };
+    }
+
+    // ========================================================================
+    // Failover-aware high-level reads
+    // ========================================================================
+
+    /**
+     * Get account transactions with provider failover.
+     *
+     * Unlike `getClient().getTransactions(...)`, this loops across the network's
+     * providers: a provider that passes the `getMasterchainInfo` health probe but
+     * fails the v2 `getTransactions` call (e.g. Chainstack/Orbs testnet, which
+     * 403 on transaction reads) is no longer able to permanently break this path.
+     *
+     * Semantics:
+     *  1. Pick the current best provider (the selector's scored top).
+     *  2. Acquire a rate-limit token for THAT provider, bind a short-lived
+     *     `TonClient` to its endpoint, and call `getTransactions`.
+     *  3. On success → `reportSuccess()` and return.
+     *  4. On error → `reportError()` (marks the provider success:false, scoring 0
+     *     within its cooldown, and clears the selection cache) so the next pick is
+     *     a DIFFERENT, still-eligible provider, then retry.
+     *  5. When every candidate has been tried, re-throw the last error so the
+     *     caller's retry/dead-letter logic still triggers — but only after a
+     *     genuine failover across all providers.
+     *
+     * Returns the same `Transaction[]` `TonClient.getTransactions` returns, so a
+     * consumer can swap `client.getTransactions(addr, opts)` for
+     * `adapter.getTransactions(addr, opts)` with no shape change.
+     */
+    async getTransactions(
+        address: Address | string,
+        opts: {
+            limit?: number;
+            lt?: string;
+            hash?: string;
+            to_lt?: string;
+            inclusive?: boolean;
+            archival?: boolean;
+        } = {},
+        timeoutMs: number = 15000
+    ): Promise<Transaction[]> {
+        const network = this.manager.getNetwork();
+        if (!network) {
+            throw new Error('ProviderManager not initialized');
+        }
+
+        const addr = typeof address === 'string' ? Address.parse(address) : address;
+        const reqOpts = { limit: opts.limit ?? 20, ...opts };
+
+        // Bound the loop to the number of configured providers (>=1): a run can try
+        // every candidate but can never loop forever.
+        const maxAttempts = Math.max(1, this.manager.getProviders().length);
+        const rateLimiter = this.manager.getRateLimiter();
+        const tried = new Set<string>();
+        let lastError: unknown;
+
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const provider = this.manager.getActiveProvider();
+            if (!provider) break; // nothing selectable left
+            if (tried.has(provider.id)) break; // selector can't offer a new candidate
+            tried.add(provider.id);
+
+            // Respect the provider's rate limit (best-effort: never let token
+            // acquisition block the whole failover indefinitely).
+            if (rateLimiter) {
+                await rateLimiter.acquire(provider.id, timeoutMs);
+            }
+
+            // Resolve the endpoint exactly like getClient() (handles Orbs dynamic
+            // discovery) — `provider` is the current best, so getEndpoint() targets
+            // it — and bind a short-lived client to THIS provider so failover never
+            // reuses a client pinned to a different one.
+            const endpoint = await this.manager.getEndpoint();
+            const apiKey = this.manager.getActiveProvider()?.apiKey;
+            const client = new TonClient({ endpoint, apiKey });
+
+            try {
+                const result = await withTimeout(
+                    client.getTransactions(addr, reqOpts),
+                    timeoutMs,
+                    `getTransactions(${provider.id})`
+                );
+                this.manager.reportSuccess();
+                return result;
+            } catch (error: any) {
+                lastError = error;
+                this.logger.warn(
+                    `getTransactions failed on ${provider.id}, failing over`,
+                    { error: error?.message || String(error) }
+                );
+                // Marks the provider success:false + clears the selection cache, so
+                // the next getActiveProvider() returns a different provider.
+                this.manager.reportError(error);
+            }
+        }
+
+        // Every candidate was tried and failed — surface the last error.
+        throw (
+            lastError ||
+            new Error(`getTransactions: no available provider for ${network}`)
+        );
     }
 
     // ========================================================================

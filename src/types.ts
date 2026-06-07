@@ -80,6 +80,14 @@ export interface ProviderConfig {
     isDynamic?: boolean;
     /** Whether this provider is compatible with browser environments (default: true) */
     browserCompatible?: boolean;
+    /**
+     * Whether this provider serves the v2 `getTransactions` call (default: true).
+     * Set to `false` for providers that pass the get-method/health probe but 403
+     * on transaction reads (e.g. Chainstack/Orbs testnet, which only proxy
+     * liteserver get-methods). `getTransactions` skips such providers entirely so
+     * their global health stays intact for the get-method path. Absent ⇒ true.
+     */
+    servesGetTransactions?: boolean;
     /** Optional description or notes */
     description?: string;
 }
@@ -145,6 +153,12 @@ export interface ResolvedProvider {
     isDynamic: boolean;
     /** Whether this provider is compatible with browser environments */
     browserCompatible: boolean;
+    /**
+     * Whether this provider serves the v2 `getTransactions` call.
+     * `false` ⇒ excluded from the `getTransactions` candidate set (see
+     * ProviderConfig.servesGetTransactions). Defaults to true when absent in config.
+     */
+    servesGetTransactions: boolean;
 }
 
 /**

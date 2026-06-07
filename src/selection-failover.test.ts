@@ -291,6 +291,108 @@ console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n'
     );
 }
 
+// Test 5 — Capability flag: getTransactions candidate set excludes
+// servesGetTransactions:false providers (Chainstack/Orbs) up front, WITHOUT
+// affecting get-method best-provider selection. This mirrors
+// manager.getTransactionCapableProviders() exactly:
+//   selector.getAvailableProviders(network).filter(p => p.servesGetTransactions !== false)
+// (the manager method needs a live init() so we exercise the same composition at
+// the selector level, which also proves the flag survives config → ResolvedProvider).
+{
+    console.log(
+        '\nTest 5: capability flag excludes Chainstack/Orbs from the getTransactions candidate set',
+    );
+
+    // chainstack priority-1 (incapable), toncenter priority-5 (capable),
+    // tatum priority-8 (capable), orbs priority-90 (incapable). Static endpoints
+    // (no {key}) so they resolve offline with no env.
+    const cfg: RpcConfig = {
+        version: '1.0',
+        providers: {
+            chainstack_testnet: {
+                name: 'Chainstack Testnet',
+                type: 'chainstack',
+                network: 'testnet',
+                endpoints: { v2: 'https://ton-testnet.core.chainstack.com/test/api/v2' },
+                rps: 25,
+                priority: 1,
+                enabled: true,
+                servesGetTransactions: false,
+            },
+            toncenter_testnet: { ...DEFAULT_PROVIDERS.toncenter_testnet },
+            tatum_testnet: {
+                name: 'Tatum Testnet',
+                type: 'tatum',
+                network: 'testnet',
+                endpoints: { v2: 'https://ton-testnet.gateway.tatum.io' },
+                rps: 3,
+                priority: 8,
+                enabled: true,
+            },
+            orbs_testnet: { ...DEFAULT_PROVIDERS.orbs_testnet, servesGetTransactions: false },
+        },
+        defaults: {
+            testnet: ['chainstack_testnet', 'toncenter_testnet', 'tatum_testnet', 'orbs_testnet'],
+            mainnet: [],
+        },
+    };
+
+    const registry = new ProviderRegistry(cfg, silentLogger);
+    // All four pass the health probe — capability is independent of health.
+    const results = new Map<string, ProviderHealthResult>();
+    results.set('chainstack_testnet-testnet', healthy('chainstack_testnet', 'testnet', 30));
+    results.set('toncenter_testnet-testnet', healthy('toncenter_testnet', 'testnet', 400));
+    results.set('tatum_testnet-testnet', healthy('tatum_testnet', 'testnet', 500));
+    results.set('orbs_testnet-testnet', healthy('orbs_testnet', 'testnet', 50));
+    const checker = mutableStubHealthChecker(results);
+    const selector = createSelector(registry, checker, undefined, silentLogger);
+
+    // (a) candidate set excludes Chainstack/Orbs, includes Toncenter then Tatum.
+    const txCapable = selector
+        .getAvailableProviders('testnet')
+        .filter((p) => p.servesGetTransactions !== false)
+        .map((p) => p.id);
+    check(
+        'getTransactions candidates exclude chainstack_testnet & orbs_testnet',
+        !txCapable.includes('chainstack_testnet') && !txCapable.includes('orbs_testnet'),
+        `candidates: [${txCapable.join(', ')}]`,
+    );
+    check(
+        'getTransactions candidates are [toncenter_testnet, tatum_testnet] in score order',
+        txCapable[0] === 'toncenter_testnet' && txCapable[1] === 'tatum_testnet',
+        `candidates: [${txCapable.join(', ')}]`,
+    );
+
+    // (b) get-method best-provider selection is UNAFFECTED — still Chainstack.
+    const best = selector.getBestProvider('testnet');
+    check(
+        'get-method best provider is still chainstack_testnet (capability flag does not affect it)',
+        best?.id === 'chainstack_testnet',
+        `best: ${best?.id ?? 'none'}`,
+    );
+
+    // (c) with ALL capable providers failing, the candidate set is empty (the
+    // adapter then throws the no-transaction-capable-provider error).
+    results.set(
+        'toncenter_testnet-testnet',
+        offline('toncenter_testnet', 'testnet', 'Provider toncenter_testnet: HTTP 403 Forbidden'),
+    );
+    results.set(
+        'tatum_testnet-testnet',
+        offline('tatum_testnet', 'testnet', 'Provider tatum_testnet: HTTP 403 Forbidden'),
+    );
+    selector.clearCache('testnet');
+    const capableWhenAllFailing = selector
+        .getAvailableProviders('testnet')
+        .filter((p) => p.servesGetTransactions !== false)
+        .map((p) => p.id);
+    check(
+        'no transaction-capable provider remains when all capable ones fail',
+        capableWhenAllFailing.length === 0,
+        `capable: [${capableWhenAllFailing.join(', ')}]`,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------

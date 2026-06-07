@@ -123,6 +123,9 @@ export function resolveProvider(id: string, config: ProviderConfig): ResolvedPro
         priority: config.priority,
         isDynamic: config.isDynamic || false,
         browserCompatible: config.browserCompatible !== undefined ? config.browserCompatible : true,
+        // Default true: a provider is assumed to serve getTransactions unless the
+        // config explicitly opts out (e.g. Chainstack/Orbs testnet liteserver proxies).
+        servesGetTransactions: config.servesGetTransactions !== false,
     };
 }
 

@@ -155,6 +155,11 @@
           "description": "Whether this provider uses dynamic endpoint discovery (e.g., Orbs TON Access)",
           "default": false
         },
+        "servesGetTransactions": {
+          "type": "boolean",
+          "description": "Whether this provider serves the v2 getTransactions call. Set false for providers that pass the health probe but 403 on transaction reads (e.g. Chainstack/Orbs testnet liteserver proxies). getTransactions skips such providers; absent means true.",
+          "default": true
+        },
         "description": {
           "type": "string",
           "description": "Optional notes about this provider",

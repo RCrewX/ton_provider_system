@@ -14,7 +14,8 @@
       "rps": 25,
       "priority": 1,
       "enabled": true,
-      "description": "Chainstack testnet API - 25 RPS free plan"
+      "servesGetTransactions": false,
+      "description": "Chainstack testnet API - 25 RPS free plan. Serves get-methods/state but 403s on v2 getTransactions (Archive/Debug/Trace not on the free plan) - excluded from the getTransactions candidate set."
     },
     "toncenter_testnet": {
       "name": "TON Center Testnet",
@@ -121,7 +122,8 @@
       "priority": 90,
       "enabled": true,
       "isDynamic": true,
-      "description": "Orbs decentralized gateway - no hard limit, uses dynamic discovery"
+      "servesGetTransactions": false,
+      "description": "Orbs decentralized gateway - no hard limit, uses dynamic discovery. Liteserver proxy serves get-methods/state but 403s on v2 getTransactions - excluded from the getTransactions candidate set."
     },
     "orbs_mainnet": {
       "name": "Orbs TON Access Mainnet",
@@ -134,7 +136,8 @@
       "priority": 10,
       "enabled": true,
       "isDynamic": true,
-      "description": "Orbs decentralized gateway - no hard limit, uses dynamic discovery"
+      "servesGetTransactions": false,
+      "description": "Orbs decentralized gateway - no hard limit, uses dynamic discovery. Liteserver proxy serves get-methods/state but 403s on v2 getTransactions - excluded from the getTransactions candidate set."
     }
   },
   "defaults": {

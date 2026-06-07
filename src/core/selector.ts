@@ -603,6 +603,7 @@ export class ProviderSelector {
             priority: 0,
             isDynamic: false,
             browserCompatible: true, // Custom endpoints are assumed compatible
+            servesGetTransactions: true, // Custom endpoints are assumed fully capable
         };
     }
 

@@ -151,24 +151,27 @@ export class NodeAdapter {
     // ========================================================================
 
     /**
-     * Get account transactions with provider failover.
+     * Get account transactions with capability-aware provider failover.
      *
-     * Unlike `getClient().getTransactions(...)`, this loops across the network's
-     * providers: a provider that passes the `getMasterchainInfo` health probe but
-     * fails the v2 `getTransactions` call (e.g. Chainstack/Orbs testnet, which
-     * 403 on transaction reads) is no longer able to permanently break this path.
+     * Unlike `getClient().getTransactions(...)`, this builds a candidate set of the
+     * network's *transaction-capable* providers (score-ordered, best first) and
+     * loops over THAT set. Providers known not to serve the v2 `getTransactions`
+     * shape — flagged `servesGetTransactions: false` in config (Chainstack/Orbs
+     * testnet, which pass the `getMasterchainInfo` health probe but 403 on
+     * transaction reads) — are excluded UP FRONT. They are never called and never
+     * `reportError`-ed here, so their global health stays intact and the fast
+     * get-method path keeps using them (a wasted 403 would otherwise evict them).
      *
-     * Semantics:
-     *  1. Pick the current best provider (the selector's scored top).
-     *  2. Acquire a rate-limit token for THAT provider, bind a short-lived
+     * Semantics (per capable candidate, in score order):
+     *  1. Acquire a rate-limit token for THAT provider, bind a short-lived
      *     `TonClient` to its endpoint, and call `getTransactions`.
-     *  3. On success → `reportSuccess()` and return.
-     *  4. On error → `reportError()` (marks the provider success:false, scoring 0
-     *     within its cooldown, and clears the selection cache) so the next pick is
-     *     a DIFFERENT, still-eligible provider, then retry.
-     *  5. When every candidate has been tried, re-throw the last error so the
-     *     caller's retry/dead-letter logic still triggers — but only after a
-     *     genuine failover across all providers.
+     *  2. On success → `reportSuccess(provider.id)` and return.
+     *  3. On a GENUINE error → `reportError(error, provider.id)` (marks THAT
+     *     provider success:false + clears the selection cache) and try the next
+     *     capable candidate.
+     *  4. When every capable candidate has been tried, re-throw the last error so
+     *     the caller's retry/dead-letter logic still triggers.
+     *  5. If there is NO capable provider at all, throw a clear error.
      *
      * Returns the same `Transaction[]` `TonClient.getTransactions` returns, so a
      * consumer can swap `client.getTransactions(addr, opts)` for
@@ -194,32 +197,32 @@ export class NodeAdapter {
         const addr = typeof address === 'string' ? Address.parse(address) : address;
         const reqOpts = { limit: opts.limit ?? 20, ...opts };
 
-        // Bound the loop to the number of configured providers (>=1): a run can try
-        // every candidate but can never loop forever.
-        const maxAttempts = Math.max(1, this.manager.getProviders().length);
+        // Capability-filtered, score-ordered candidates. Incapable providers
+        // (servesGetTransactions:false) are simply not in this list — so we never
+        // call them and never poison their health. The list is finite, so the loop
+        // is naturally bounded.
+        const candidates = this.manager.getTransactionCapableProviders();
+        if (candidates.length === 0) {
+            throw new Error(
+                `getTransactions: no transaction-capable provider for ${network}`
+            );
+        }
+
         const rateLimiter = this.manager.getRateLimiter();
-        const tried = new Set<string>();
         let lastError: unknown;
 
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const provider = this.manager.getActiveProvider();
-            if (!provider) break; // nothing selectable left
-            if (tried.has(provider.id)) break; // selector can't offer a new candidate
-            tried.add(provider.id);
-
+        for (const provider of candidates) {
             // Respect the provider's rate limit (best-effort: never let token
             // acquisition block the whole failover indefinitely).
             if (rateLimiter) {
                 await rateLimiter.acquire(provider.id, timeoutMs);
             }
 
-            // Resolve the endpoint exactly like getClient() (handles Orbs dynamic
-            // discovery) — `provider` is the current best, so getEndpoint() targets
-            // it — and bind a short-lived client to THIS provider so failover never
-            // reuses a client pinned to a different one.
-            const endpoint = await this.manager.getEndpoint();
-            const apiKey = this.manager.getActiveProvider()?.apiKey;
-            const client = new TonClient({ endpoint, apiKey });
+            // Bind a short-lived client to THIS specific candidate's endpoint so
+            // failover never reuses a client pinned to a different provider. Capable
+            // candidates are static v2 (Orbs dynamic discovery is capability-excluded).
+            const endpoint = normalizeV2Endpoint(provider.endpointV2, provider);
+            const client = new TonClient({ endpoint, apiKey: provider.apiKey });
 
             try {
                 const result = await withTimeout(
@@ -227,7 +230,7 @@ export class NodeAdapter {
                     timeoutMs,
                     `getTransactions(${provider.id})`
                 );
-                this.manager.reportSuccess();
+                this.manager.reportSuccess(provider.id);
                 return result;
             } catch (error: any) {
                 lastError = error;
@@ -235,16 +238,17 @@ export class NodeAdapter {
                     `getTransactions failed on ${provider.id}, failing over`,
                     { error: error?.message || String(error) }
                 );
-                // Marks the provider success:false + clears the selection cache, so
-                // the next getActiveProvider() returns a different provider.
-                this.manager.reportError(error);
+                // Attribute the failure to THIS candidate (marks it success:false +
+                // clears the selection cache) — a genuine failure among the capable
+                // providers, not a capability exclusion.
+                this.manager.reportError(error, provider.id);
             }
         }
 
-        // Every candidate was tried and failed — surface the last error.
+        // Every capable candidate was tried and failed — surface the last error.
         throw (
             lastError ||
-            new Error(`getTransactions: no available provider for ${network}`)
+            new Error(`getTransactions: all transaction-capable providers failed for ${network}`)
         );
     }
 

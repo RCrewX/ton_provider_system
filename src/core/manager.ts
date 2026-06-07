@@ -402,36 +402,50 @@ export class ProviderManager {
 
     /**
      * Report a successful request
+     *
+     * @param providerId - Optionally attribute the success to a SPECIFIC provider
+     *   (used by callers that drive their own candidate list, e.g.
+     *   NodeAdapter.getTransactions, where the provider used is not necessarily the
+     *   selector's current best). Defaults to the current best provider.
      */
-    reportSuccess(): void {
+    reportSuccess(providerId?: string): void {
         if (!this.initialized || !this.network) return;
 
-        const provider = this.selector!.getBestProvider(this.network);
-        if (provider) {
-            this.rateLimiter!.reportSuccess(provider.id);
+        const id = providerId ?? this.selector!.getBestProvider(this.network)?.id;
+        if (id) {
+            this.rateLimiter!.reportSuccess(id);
         }
     }
 
     /**
      * Report an error (triggers provider switch if needed)
+     *
+     * @param providerId - Optionally attribute the error to a SPECIFIC provider
+     *   (used by callers that drive their own candidate list, e.g.
+     *   NodeAdapter.getTransactions). Defaults to the current active/best provider.
      */
-    reportError(error: Error | string): void {
+    reportError(error: Error | string, providerId?: string): void {
         if (!this.initialized || !this.network) return;
 
-        // Get the ACTIVE provider (the one that just failed), not the "best" one
-        // This ensures we mark the correct provider as failed
-        const activeProviderId = this.selector!.getActiveProviderId(this.network);
         let provider: ResolvedProvider | null = null;
-        
-        if (activeProviderId) {
-            provider = this.registry!.getProvider(activeProviderId) || null;
+
+        if (providerId) {
+            // Explicit attribution: the caller knows exactly which provider failed.
+            provider = this.registry!.getProvider(providerId) || null;
+        } else {
+            // Get the ACTIVE provider (the one that just failed), not the "best" one
+            // This ensures we mark the correct provider as failed
+            const activeProviderId = this.selector!.getActiveProviderId(this.network);
+            if (activeProviderId) {
+                provider = this.registry!.getProvider(activeProviderId) || null;
+            }
+
+            // Fallback to best provider if no active provider tracked
+            if (!provider) {
+                provider = this.selector!.getBestProvider(this.network);
+            }
         }
-        
-        // Fallback to best provider if no active provider tracked
-        if (!provider) {
-            provider = this.selector!.getBestProvider(this.network);
-        }
-        
+
         if (!provider) {
             this.options.logger.warn(`Cannot report error: no provider available for ${this.network}`);
             return;
@@ -614,6 +628,24 @@ export class ProviderManager {
         }
         
         return providers;
+    }
+
+    /**
+     * Get transaction-capable providers for the current network, in selector
+     * score order (best first).
+     *
+     * Read-only: enumerates the score-ordered available providers and excludes any
+     * flagged `servesGetTransactions: false` (Chainstack/Orbs testnet liteserver
+     * proxies, which 403 on v2 getTransactions). Used by
+     * NodeAdapter.getTransactions to build its candidate set WITHOUT poisoning the
+     * incapable providers' global health — so the get-method path keeps using them.
+     * Returns [] when no capable provider is currently selectable.
+     */
+    getTransactionCapableProviders(): ResolvedProvider[] {
+        if (!this.initialized || !this.network) return [];
+        return this.selector!
+            .getAvailableProviders(this.network)
+            .filter((p) => p.servesGetTransactions !== false);
     }
 
     /**

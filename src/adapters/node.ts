@@ -385,35 +385,131 @@ export class NodeAdapter {
     }
 
     /**
-     * Send BOC via REST API
+     * Broadcast an already-signed external message BOC, with provider failover.
+     *
+     * Unlike a single-endpoint `client.sendFile`/raw POST, this walks the network's
+     * score-ordered providers (best first; see ProviderManager.getBroadcastCapableProviders)
+     * and fails over to the next provider when one returns a TRANSIENT failure — a
+     * 429 (rate limit), a 5xx (gateway/server error, e.g. the testnet chainstack
+     * free plan 500ing on sendBoc), a timeout, or a network error. This closes the
+     * broadcast half of the failover story: the getTransactions capability flag only
+     * diverted reads, so a demoted-but-still-reachable provider could still 500 a
+     * broadcast — now the broadcast itself moves on to a healthy provider.
+     *
+     * Safety: re-broadcasting is idempotent at the TON level — the external message
+     * has a deterministic hash, so forwarding the SAME signed BOC to another provider
+     * after a transient failure is safe (the network dedups; a duplicate is a no-op).
+     * A 4xx that means "this BOC is invalid" (400/413/422) is therefore NOT failed
+     * over: it is the payload, not the provider — surfaced immediately, without
+     * poisoning the provider's health or spraying a bad BOC across the fleet.
      */
     async sendBoc(
         boc: Buffer | string,
         timeoutMs: number = 30000
     ): Promise<void> {
-        const endpoint = await this.manager.getEndpoint();
-        const baseV2 = toV2Base(endpoint);
-        const url = `${baseV2}/sendBoc`;
+        const network = this.manager.getNetwork();
+        if (!network) {
+            throw new Error('ProviderManager not initialized');
+        }
         const bocBase64 = typeof boc === 'string' ? boc : boc.toString('base64');
 
-        try {
-            const response = await fetchWithTimeout(
-                url,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ boc: bocBase64 }),
-                },
-                timeoutMs
-            );
-
-            const json = await response.json();
-            this.unwrapResponse(json);
-            this.manager.reportSuccess();
-        } catch (error: any) {
-            this.manager.reportError(error);
-            throw error;
+        const candidates = this.manager.getBroadcastCapableProviders();
+        if (candidates.length === 0) {
+            // No selectable provider — fall back to the legacy single-endpoint path
+            // (best provider / public fallback) so we never regress to "no broadcast".
+            const endpoint = await this.manager.getEndpoint();
+            try {
+                await this.sendBocToEndpoint(endpoint, bocBase64, timeoutMs);
+                this.manager.reportSuccess();
+            } catch (error: any) {
+                if (!this.isInvalidPayloadError(error)) {
+                    this.manager.reportError(error);
+                }
+                throw error;
+            }
+            return;
         }
+
+        const rateLimiter = this.manager.getRateLimiter();
+        let lastError: unknown;
+
+        for (const provider of candidates) {
+            if (rateLimiter) {
+                await rateLimiter.acquire(provider.id, timeoutMs);
+            }
+            // Static v2 endpoint for this candidate. (Dynamic providers fall back to
+            // their static gateway URL here; they sit last in score order so they are
+            // only reached as a broadcast backstop.)
+            const endpoint = normalizeV2Endpoint(provider.endpointV2, provider);
+
+            try {
+                await this.sendBocToEndpoint(endpoint, bocBase64, timeoutMs);
+                this.manager.reportSuccess(provider.id);
+                return;
+            } catch (error: any) {
+                // Invalid-payload 4xx → the BOC is bad, not the provider. Surface it
+                // immediately: don't fail over and don't mark the provider unhealthy.
+                if (this.isInvalidPayloadError(error)) {
+                    throw error;
+                }
+                lastError = error;
+                this.manager.reportError(error, provider.id);
+                this.logger.warn(
+                    `sendBoc failed on ${provider.id}, failing over`,
+                    { error: error?.message || String(error) }
+                );
+            }
+        }
+
+        // Every provider was tried and failed on a transient error — surface the last.
+        throw (
+            lastError ||
+            new Error(`sendBoc: all providers failed for ${network}`)
+        );
+    }
+
+    /**
+     * POST a base64 BOC to one provider's REST `/sendBoc`. Throws on a non-2xx
+     * response with the HTTP `status` attached (so the caller can classify
+     * transient vs invalid-payload), and on an `ok:false` JSON body.
+     */
+    private async sendBocToEndpoint(
+        endpoint: string,
+        bocBase64: string,
+        timeoutMs: number
+    ): Promise<void> {
+        const baseV2 = toV2Base(endpoint);
+        const url = `${baseV2}/sendBoc`;
+        const response = await fetchWithTimeout(
+            url,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ boc: bocBase64 }),
+            },
+            timeoutMs
+        );
+        if (!response.ok) {
+            const err: any = new Error(
+                `HTTP ${response.status} ${response.statusText} on sendBoc`
+            );
+            err.status = response.status;
+            throw err;
+        }
+        const json = await response.json();
+        this.unwrapResponse(json);
+    }
+
+    /**
+     * True only for a 4xx that means the BOC payload itself is invalid (400 Bad
+     * Request, 413 Payload Too Large, 422 Unprocessable) — these must NOT fail over
+     * (the next provider would reject the same BOC identically). Auth/availability
+     * 4xx (401/403/404), 429, 5xx, timeouts and network errors are all transient
+     * for an idempotent broadcast and DO fail over.
+     */
+    private isInvalidPayloadError(error: unknown): boolean {
+        const status = (error as any)?.status;
+        return typeof status === 'number' && (status === 400 || status === 413 || status === 422);
     }
 
     /**

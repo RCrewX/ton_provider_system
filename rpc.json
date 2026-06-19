@@ -12,10 +12,10 @@
       },
       "keyEnvVar": "CHAINSTACK_KEY_TESTNET",
       "rps": 25,
-      "priority": 1,
+      "priority": 50,
       "enabled": true,
       "servesGetTransactions": false,
-      "description": "Chainstack testnet API - 25 RPS free plan. Serves get-methods/state but 403s on v2 getTransactions (Archive/Debug/Trace not on the free plan) - excluded from the getTransactions candidate set."
+      "description": "Chainstack testnet API - 25 RPS free plan. DEMOTED to last-resort backup (priority 50): on the current free plan it 403s on v2 getTransactions, 429s on general reads, and 500s on sendBoc/broadcast, yet passes the getMasterchainInfo health probe - so as priority-1 it was selected 'best' for ALL methods (incl. broadcast/reads, which the getTransactions capability flag does NOT divert) and broke moves. TON Center / Tatum now serve the workload; this stays only as a get-method fallback."
     },
     "toncenter_testnet": {
       "name": "TON Center Testnet",
@@ -26,9 +26,9 @@
       },
       "apiKeyEnvVar": "TONCENTER_API_KEY",
       "rps": 10,
-      "priority": 5,
+      "priority": 1,
       "enabled": true,
-      "description": "Official TON Center testnet - 10 RPS with API key, 1 RPS without"
+      "description": "Official TON Center testnet - 10 RPS with API key, 1 RPS without. PROMOTED to primary (priority 1): serves the full v2 surface (getTransactions/sendBoc/get-methods, curl-proven 200) so every method - reads AND broadcast - prefers it over chainstack."
     },
     "toncenter_mainnet": {
       "name": "TON Center Mainnet",
@@ -92,10 +92,10 @@
       },
       "apiKeyEnvVar": "TATUM_API_KEY_TESTNET",
       "rps": 3,
-      "priority": 8,
+      "priority": 2,
       "enabled": true,
       "browserCompatible": false,
-      "description": "Tatum testnet gateway - 3 RPS free plan. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_TESTNET. Not compatible with browser due to CORS restrictions."
+      "description": "Tatum testnet gateway - 3 RPS free plan. PROMOTED to secondary (priority 2): serves the full workload (getTransactions/sendBoc 200) so it backs up TON Center ahead of the demoted chainstack. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_TESTNET. Not compatible with browser due to CORS restrictions."
     },
     "tatum_mainnet": {
       "name": "Tatum Mainnet",
@@ -142,10 +142,10 @@
   },
   "defaults": {
     "testnet": [
-      "chainstack_testnet",
       "toncenter_testnet",
-      "onfinality_testnet",
       "tatum_testnet",
+      "onfinality_testnet",
+      "chainstack_testnet",
       "orbs_testnet"
     ],
     "mainnet": [

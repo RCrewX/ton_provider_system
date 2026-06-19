@@ -393,6 +393,190 @@ console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n'
     );
 }
 
+// Test 6 — rpc.json testnet PRIORITY DEMOTION (this change). Mirrors the shipped
+// rpc.json after the fix: toncenter priority 1 (primary), tatum priority 2, and
+// chainstack DEMOTED to priority 50. Proves the demotion is the lever: chainstack
+// is given a big LATENCY advantage (20ms vs 400ms) yet must NOT win — because the
+// priority gap (toncenter 1 vs chainstack 50) outweighs latency in the score. This
+// is what makes getEndpoint()/getClient() (the raw-client path uap broadcasts and
+// runs get-methods through) point at a provider that serves the FULL workload.
+{
+    console.log(
+        '\nTest 6: rpc.json testnet demotion — toncenter(p1) wins over chainstack(p50) despite worse latency',
+    );
+
+    const cfg: RpcConfig = {
+        version: '1.0',
+        providers: {
+            chainstack_testnet: {
+                name: 'Chainstack Testnet',
+                type: 'chainstack',
+                network: 'testnet',
+                endpoints: { v2: 'https://ton-testnet.core.chainstack.com/test/api/v2' },
+                rps: 25,
+                priority: 50, // DEMOTED (was 1)
+                enabled: true,
+                servesGetTransactions: false,
+            },
+            toncenter_testnet: {
+                name: 'TON Center Testnet',
+                type: 'toncenter',
+                network: 'testnet',
+                endpoints: { v2: 'https://testnet.toncenter.com/api/v2' },
+                rps: 10,
+                priority: 1, // PROMOTED (was 5)
+                enabled: true,
+            },
+            tatum_testnet: {
+                name: 'Tatum Testnet',
+                type: 'tatum',
+                network: 'testnet',
+                endpoints: { v2: 'https://ton-testnet.gateway.tatum.io' },
+                rps: 3,
+                priority: 2, // PROMOTED (was 8)
+                enabled: true,
+            },
+        },
+        defaults: {
+            testnet: ['toncenter_testnet', 'tatum_testnet', 'chainstack_testnet'],
+            mainnet: [],
+        },
+    };
+
+    const registry = new ProviderRegistry(cfg, silentLogger);
+    const checker = stubHealthChecker([
+        healthy('chainstack_testnet', 'testnet', 20), // much faster, but demoted
+        healthy('toncenter_testnet', 'testnet', 400), // slower, but priority 1
+        healthy('tatum_testnet', 'testnet', 500),
+    ]);
+    const selector = createSelector(registry, checker, undefined, silentLogger);
+
+    const best = selector.getBestProvider('testnet');
+    check(
+        'best testnet provider is toncenter_testnet (priority lever beats latency)',
+        best?.id === 'toncenter_testnet',
+        `best: ${best?.id ?? 'none'}`,
+    );
+
+    const order = selector.getAvailableProviders('testnet').map((p) => p.id);
+    check(
+        'available order is [toncenter, tatum, chainstack] (chainstack last)',
+        order[0] === 'toncenter_testnet' &&
+            order[1] === 'tatum_testnet' &&
+            order[order.length - 1] === 'chainstack_testnet',
+        `order: [${order.join(', ')}]`,
+    );
+}
+
+// Test 7 — BROADCAST (sendBoc) failover. The new NodeAdapter.sendBoc walks the
+// broadcast candidate set (ProviderManager.getBroadcastCapableProviders =
+// selector.getAvailableProviders, NO servesGetTransactions filter) and, on a
+// TRANSIENT failure (here a 500 on the picked provider), calls
+// reportError → markOffline (success:false) and re-picks the next provider. This
+// reproduces that walk offline at the selector level (no live HTTP). It also
+// asserts the broadcast candidate set is capability-AGNOSTIC: chainstack
+// (servesGetTransactions:false) is a valid broadcast target, unlike the
+// getTransactions set which excludes it.
+{
+    console.log(
+        '\nTest 7: sendBoc broadcast fails over a 5xx provider to a healthy one (capability-agnostic)',
+    );
+
+    const cfg: RpcConfig = {
+        version: '1.0',
+        providers: {
+            toncenter_testnet: {
+                name: 'TON Center Testnet',
+                type: 'toncenter',
+                network: 'testnet',
+                endpoints: { v2: 'https://testnet.toncenter.com/api/v2' },
+                rps: 10,
+                priority: 1,
+                enabled: true,
+            },
+            tatum_testnet: {
+                name: 'Tatum Testnet',
+                type: 'tatum',
+                network: 'testnet',
+                endpoints: { v2: 'https://ton-testnet.gateway.tatum.io' },
+                rps: 3,
+                priority: 2,
+                enabled: true,
+            },
+            chainstack_testnet: {
+                name: 'Chainstack Testnet',
+                type: 'chainstack',
+                network: 'testnet',
+                endpoints: { v2: 'https://ton-testnet.core.chainstack.com/test/api/v2' },
+                rps: 25,
+                priority: 50,
+                enabled: true,
+                servesGetTransactions: false, // incapable of getTransactions...
+            },
+        },
+        defaults: {
+            testnet: ['toncenter_testnet', 'tatum_testnet', 'chainstack_testnet'],
+            mainnet: [],
+        },
+    };
+
+    const registry = new ProviderRegistry(cfg, silentLogger);
+    const results = new Map<string, ProviderHealthResult>();
+    results.set('toncenter_testnet-testnet', healthy('toncenter_testnet', 'testnet', 400));
+    results.set('tatum_testnet-testnet', healthy('tatum_testnet', 'testnet', 500));
+    results.set('chainstack_testnet-testnet', healthy('chainstack_testnet', 'testnet', 30));
+    const checker = mutableStubHealthChecker(results);
+    const selector = createSelector(registry, checker, undefined, silentLogger);
+
+    // (a) the broadcast candidate set INCLUDES chainstack (capability-agnostic),
+    // unlike the getTransactions set which filters it out.
+    const broadcastCandidates = selector.getAvailableProviders('testnet').map((p) => p.id);
+    const txCandidates = selector
+        .getAvailableProviders('testnet')
+        .filter((p) => p.servesGetTransactions !== false)
+        .map((p) => p.id);
+    check(
+        'broadcast candidates include chainstack_testnet',
+        broadcastCandidates.includes('chainstack_testnet'),
+        `broadcast: [${broadcastCandidates.join(', ')}]`,
+    );
+    check(
+        'getTransactions candidates exclude chainstack_testnet (contrast)',
+        !txCandidates.includes('chainstack_testnet'),
+        `tx: [${txCandidates.join(', ')}]`,
+    );
+
+    // (b) simulate the sendBoc loop: best (toncenter) 500s → mark offline + re-pick.
+    const failing = new Set(['toncenter_testnet']); // 500s on sendBoc
+    const tried: string[] = [];
+    let landed: string | null = null;
+    for (let i = 0; i < 5; i++) {
+        const best = selector.getBestProvider('testnet');
+        if (!best || tried.includes(best.id)) break;
+        tried.push(best.id);
+        if (!failing.has(best.id)) {
+            landed = best.id; // healthy on broadcast → sendBoc succeeds
+            break;
+        }
+        // Transient 5xx → manager.reportError → markOffline (success:false) + cache clear.
+        results.set(
+            `${best.id}-testnet`,
+            offline(best.id, 'testnet', `Provider ${best.id}: HTTP 500 Internal Server Error`),
+        );
+        selector.clearCache('testnet');
+    }
+    check(
+        'broadcast tried toncenter_testnet first (priority 1)',
+        tried[0] === 'toncenter_testnet',
+        `first: ${tried[0] ?? 'none'}`,
+    );
+    check(
+        'broadcast fails over to the next healthy provider (tatum_testnet)',
+        landed === 'tatum_testnet',
+        `landed: ${landed ?? 'none'}`,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------

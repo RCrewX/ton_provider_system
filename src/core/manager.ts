@@ -649,6 +649,23 @@ export class ProviderManager {
     }
 
     /**
+     * Get broadcast-capable providers for the current network, in selector score
+     * order (best first).
+     *
+     * Unlike getTransactionCapableProviders, this applies NO capability filter:
+     * `sendBoc` (forwarding an already-signed external message) works on EVERY
+     * provider type — including the liteserver-proxy providers (Chainstack/Orbs)
+     * that 403 only on the v2 `getTransactions` shape. The list is the plain
+     * score-ordered available set, so a broadcast walks best→worst and a provider
+     * that 429s/5xxs on sendBoc is skipped in favour of the next one.
+     * Returns [] when no provider is currently selectable.
+     */
+    getBroadcastCapableProviders(): ResolvedProvider[] {
+        if (!this.initialized || !this.network) return [];
+        return this.selector!.getAvailableProviders(this.network);
+    }
+
+    /**
      * Get provider health results for current network
      */
     getProviderHealthResults(): ProviderHealthResult[] {

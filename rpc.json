@@ -2,21 +2,6 @@
   "$schema": "./rpc-schema.json",
   "version": "1.0",
   "providers": {
-    "chainstack_testnet": {
-      "name": "Chainstack Testnet",
-      "type": "chainstack",
-      "network": "testnet",
-      "endpoints": {
-        "v2": "https://ton-testnet.core.chainstack.com/{key}/api/v2",
-        "v3": "https://ton-testnet.core.chainstack.com/{key}/api/v3"
-      },
-      "keyEnvVar": "CHAINSTACK_KEY_TESTNET",
-      "rps": 25,
-      "priority": 50,
-      "enabled": true,
-      "servesGetTransactions": false,
-      "description": "Chainstack testnet API - 25 RPS free plan. DEMOTED to last-resort backup (priority 50): on the current free plan it 403s on v2 getTransactions, 429s on general reads, and 500s on sendBoc/broadcast, yet passes the getMasterchainInfo health probe - so as priority-1 it was selected 'best' for ALL methods (incl. broadcast/reads, which the getTransactions capability flag does NOT divert) and broke moves. TON Center / Tatum now serve the workload; this stays only as a get-method fallback."
-    },
     "toncenter_testnet": {
       "name": "TON Center Testnet",
       "type": "toncenter",
@@ -28,7 +13,7 @@
       "rps": 10,
       "priority": 1,
       "enabled": true,
-      "description": "Official TON Center testnet - 10 RPS with API key, 1 RPS without. PROMOTED to primary (priority 1): serves the full v2 surface (getTransactions/sendBoc/get-methods, curl-proven 200) so every method - reads AND broadcast - prefers it over chainstack."
+      "description": "Official TON Center testnet - 10 RPS with API key, 1 RPS without. Primary testnet provider (priority 1): serves the full v2 surface (getTransactions/sendBoc/get-methods, curl-proven 200) so every method - reads AND broadcast - prefers it."
     },
     "toncenter_mainnet": {
       "name": "TON Center Mainnet",
@@ -69,20 +54,6 @@
       "enabled": true,
       "description": "GetBlock mainnet API - 20 RPS. Endpoint automatically appends /jsonRPC for JSON-RPC requests."
     },
-    "onfinality_testnet": {
-      "name": "OnFinality Testnet",
-      "type": "onfinality",
-      "network": "testnet",
-      "endpoints": {
-        "v2": "https://ton-testnet.api.onfinality.io/rpc?apikey={key}",
-        "ws": "wss://ton-testnet.api.onfinality.io/ws?apikey={key}"
-      },
-      "keyEnvVar": "ONFINALITY_KEY_TESTNET",
-      "rps": 4,
-      "priority": 5,
-      "enabled": true,
-      "description": "OnFinality testnet - 4 RPS free tier. Uses /rpc endpoint with API key in query parameter (?apikey=KEY). If no API key is set, falls back to /public endpoint (rate-limited). OnFinality requires API key in query params, NOT headers."
-    },
     "tatum_testnet": {
       "name": "Tatum Testnet",
       "type": "tatum",
@@ -95,7 +66,7 @@
       "priority": 2,
       "enabled": true,
       "browserCompatible": false,
-      "description": "Tatum testnet gateway - 3 RPS free plan. PROMOTED to secondary (priority 2): serves the full workload (getTransactions/sendBoc 200) so it backs up TON Center ahead of the demoted chainstack. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_TESTNET. Not compatible with browser due to CORS restrictions."
+      "description": "Tatum testnet gateway - 3 RPS free plan. Secondary testnet provider (priority 2): serves the full workload (getTransactions/sendBoc 200) so it backs up TON Center. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_TESTNET. Not compatible with browser due to CORS restrictions."
     },
     "tatum_mainnet": {
       "name": "Tatum Mainnet",
@@ -110,20 +81,6 @@
       "enabled": true,
       "browserCompatible": false,
       "description": "Tatum mainnet gateway - 3 RPS free plan. Endpoint automatically appends /jsonRPC. Requires x-api-key header with TATUM_API_KEY_MAINNET. Not compatible with browser due to CORS restrictions."
-    },
-    "orbs_testnet": {
-      "name": "Orbs TON Access Testnet",
-      "type": "orbs",
-      "network": "testnet",
-      "endpoints": {
-        "v2": "https://ton-testnet.orbs.network/api/v2"
-      },
-      "rps": 10,
-      "priority": 90,
-      "enabled": true,
-      "isDynamic": true,
-      "servesGetTransactions": false,
-      "description": "Orbs decentralized gateway - no hard limit, uses dynamic discovery. Liteserver proxy serves get-methods/state but 403s on v2 getTransactions - excluded from the getTransactions candidate set."
     },
     "orbs_mainnet": {
       "name": "Orbs TON Access Mainnet",
@@ -143,10 +100,7 @@
   "defaults": {
     "testnet": [
       "toncenter_testnet",
-      "tatum_testnet",
-      "onfinality_testnet",
-      "chainstack_testnet",
-      "orbs_testnet"
+      "tatum_testnet"
     ],
     "mainnet": [
       "quicknode_mainnet",

@@ -291,8 +291,12 @@ export async function loadConfig(): Promise<RpcConfig> {
 // ============================================================================
 
 /**
- * Minimal default providers when rpc.json is not available.
- * These are free public endpoints that don't require API keys.
+ * Minimal default providers when rpc.json is not available — the trimmed,
+ * transaction-capable testnet set (Toncenter primary, Tatum secondary) plus the
+ * mainnet defaults. Toncenter works keyless (rate-limited); Tatum/others pick up
+ * their key env vars when present. The non-serving testnet providers (Orbs,
+ * Chainstack, OnFinality) are intentionally NOT here — they 403/auth-fail on
+ * getTransactions, so a fresh testnet init must load only Toncenter + Tatum.
  */
 export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
     toncenter_testnet: {
@@ -303,30 +307,28 @@ export const DEFAULT_PROVIDERS: Record<string, ProviderConfig> = {
             v2: 'https://testnet.toncenter.com/api/v2',
         },
         rps: 1, // Without API key
-        // Preferred on testnet: Toncenter serves the full v2 surface incl.
-        // getTransactions (curl-proven 200). Orbs only proxies liteserver
-        // get-methods/state and 403s on getTransactions, so it must NOT be the
-        // primary testnet provider (it stays a fallback for get-method reads).
-        // Selection is score-based and priority is the lever (lower = better),
-        // so this gives Toncenter the testnet edge over Orbs (priority 90).
-        priority: 10,
+        // Primary testnet provider: Toncenter serves the full v2 surface incl.
+        // getTransactions (curl-proven 200). Selection is score-based and priority
+        // is the lever (lower = better), so priority 1 keeps it ahead of Tatum.
+        priority: 1,
         enabled: true,
         description: 'Official TON Center public endpoint',
     },
-    orbs_testnet: {
-        name: 'Orbs TON Access Testnet',
-        type: 'orbs',
+    tatum_testnet: {
+        name: 'Tatum Testnet',
+        type: 'tatum',
         network: 'testnet',
         endpoints: {
-            v2: 'https://ton-testnet.orbs.network/api/v2',
+            v2: 'https://ton-testnet.gateway.tatum.io',
         },
-        rps: 10,
-        // Demoted below toncenter_testnet (priority 10): Orbs is the decentralised
-        // fallback for non-transaction (get-method/state) testnet reads only.
-        priority: 90,
+        apiKeyEnvVar: 'TATUM_API_KEY_TESTNET',
+        rps: 3,
+        // Secondary testnet provider (priority 2): also serves the full workload
+        // (getTransactions/sendBoc 200), so it backs up Toncenter on failover.
+        priority: 2,
         enabled: true,
-        isDynamic: true,
-        description: 'Decentralized gateway - no API key needed',
+        browserCompatible: false,
+        description: 'Tatum testnet gateway - requires TATUM_API_KEY_TESTNET',
     },
     toncenter_mainnet: {
         name: 'TON Center Mainnet',
@@ -363,12 +365,12 @@ export function createDefaultConfig(): RpcConfig {
         version: '1.0',
         providers: { ...DEFAULT_PROVIDERS },
         defaults: {
-            // Testnet: Toncenter first (transactions-capable), Orbs as fallback.
-            // This default order only governs the no-healthy-providers fallback
-            // path; the primary, score-based selection is driven by priority
-            // (see toncenter_testnet/orbs_testnet above). Mainnet order is left
+            // Testnet: only the transaction-capable providers — Toncenter first,
+            // Tatum as failover. This default order governs the no-healthy-providers
+            // fallback path; the primary, score-based selection is driven by priority
+            // (see toncenter_testnet/tatum_testnet above). Mainnet order is left
             // unchanged (Orbs stays primary there — no regression).
-            testnet: ['toncenter_testnet', 'orbs_testnet'],
+            testnet: ['toncenter_testnet', 'tatum_testnet'],
             mainnet: ['orbs_mainnet', 'toncenter_mainnet'],
         },
     };

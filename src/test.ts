@@ -166,7 +166,8 @@ async function testConfigLoading(): Promise<void> {
     await runTest('Create default config', async () => {
         const config = createDefaultConfig();
         assert(config.providers.toncenter_testnet !== undefined, 'Should have toncenter_testnet');
-        assert(config.providers.orbs_testnet !== undefined, 'Should have orbs_testnet');
+        assert(config.providers.tatum_testnet !== undefined, 'Should have tatum_testnet');
+        assert(config.providers.orbs_testnet === undefined, 'Should NOT have orbs_testnet (removed from testnet defaults)');
     });
 
     await runTest('Resolve providers', async () => {

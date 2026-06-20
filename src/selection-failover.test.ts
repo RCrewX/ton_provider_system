@@ -3,11 +3,12 @@
  * OFFLINE regression test — testnet getTransactions provider selection / failover.
  *
  * Context (bug): on testnet the consumer (uap `catch_up`) reads account
- * transactions through this library's selected endpoint. Orbs was selected
- * FIRST (better/lower priority than Toncenter) but Orbs only proxies liteserver
- * get-methods — its v2 `getTransactions` 403s — so every transactions read
- * dead-lettered with no recovery. The fix makes a transactions-capable provider
- * (Toncenter testnet) win selection on testnet, with Orbs demoted to fallback.
+ * transactions through this library's selected endpoint. Non-serving providers
+ * (Orbs/Chainstack/OnFinality) were selected but only pass the health probe —
+ * their v2 `getTransactions` 403s / auth-fails — so every transactions read
+ * dead-lettered with no recovery. The fix REMOVES those providers from the
+ * testnet default set entirely, leaving only the transaction-capable Toncenter
+ * (primary) and Tatum (failover) testnet providers.
  *
  * Why this test is OFFLINE: selection is purely score-based over the providers'
  * config (priority) + their health results. We seed health results directly
@@ -136,41 +137,43 @@ function makeRegistry(): ProviderRegistry {
 
 console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n');
 
-// Test 1 — Toncenter must win testnet selection EVEN when Orbs is faster.
-// Orbs is given a large latency advantage (50ms vs 400ms) to prove the fix is
-// the priority change (not latency): on the OLD priorities (orbs 50 < toncenter
-// 100) Orbs would win this; on the FIXED priorities (toncenter 10 < orbs 90)
-// Toncenter wins despite the worse latency.
+// Test 1 — With comparable health/latency, Toncenter (priority 1) is preferred
+// over Tatum (priority 2): priority breaks the tie (score blends priority+latency,
+// so the p1↔p2 gap only decides when latency is even). Both are now the ONLY
+// testnet defaults (Orbs/Chainstack/OnFinality removed) and BOTH are
+// transaction-capable, so either winning is correct — this asserts the intended
+// primary under normal conditions.
 {
     console.log('Test 1: testnet primary = transactions-capable provider (Toncenter)');
     const registry = makeRegistry();
     const checker = stubHealthChecker([
-        healthy('orbs_testnet', 'testnet', 50), // faster, but tx-incapable
-        healthy('toncenter_testnet', 'testnet', 400), // slower, but serves getTransactions
+        healthy('tatum_testnet', 'testnet', 100), // equal latency, priority 2
+        healthy('toncenter_testnet', 'testnet', 100), // equal latency, priority 1 → wins tie
     ]);
     const selector = createSelector(registry, checker, undefined, silentLogger);
     const best = selector.findBestProvider('testnet');
     check(
-        'selects toncenter_testnet for testnet (not Orbs)',
+        'selects toncenter_testnet for testnet (priority tie-break over Tatum)',
         best?.id === 'toncenter_testnet',
         `selected: ${best?.id ?? 'none'}`,
     );
 }
 
-// Test 2 — Failover: when the primary (Toncenter) is offline, the healthy Orbs
-// fallback is selected (the system still recovers to an available provider).
+// Test 2 — Failover: when the primary (Toncenter) is offline, the healthy Tatum
+// fallback is selected (the system still recovers to a transaction-capable
+// provider — Tatum is now the only testnet failover target).
 {
     console.log('\nTest 2: failover to healthy fallback when primary is offline');
     const registry = makeRegistry();
     const checker = stubHealthChecker([
         offline('toncenter_testnet', 'testnet', 'HTTP 503 Service Unavailable'),
-        healthy('orbs_testnet', 'testnet', 50),
+        healthy('tatum_testnet', 'testnet', 50),
     ]);
     const selector = createSelector(registry, checker, undefined, silentLogger);
     const best = selector.findBestProvider('testnet');
     check(
-        'fails over to orbs_testnet when toncenter_testnet is offline',
-        best?.id === 'orbs_testnet',
+        'fails over to tatum_testnet when toncenter_testnet is offline',
+        best?.id === 'tatum_testnet',
         `selected: ${best?.id ?? 'none'}`,
     );
 
@@ -178,8 +181,8 @@ console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n'
     // yield the healthy fallback when the failing primary is excluded.
     const next = selector.getNextProvider('testnet', ['toncenter_testnet']);
     check(
-        'getNextProvider(testnet, [toncenter_testnet]) → orbs_testnet',
-        next?.id === 'orbs_testnet',
+        'getNextProvider(testnet, [toncenter_testnet]) → tatum_testnet',
+        next?.id === 'tatum_testnet',
         `next: ${next?.id ?? 'none'}`,
     );
 }
@@ -232,7 +235,18 @@ console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n'
                 enabled: true,
             },
             toncenter_testnet: { ...DEFAULT_PROVIDERS.toncenter_testnet },
-            orbs_testnet: { ...DEFAULT_PROVIDERS.orbs_testnet },
+            // Orbs is no longer a shipped default; define it inline to exercise the
+            // generic getTransactions failover-walk mechanism (still in the library).
+            orbs_testnet: {
+                name: 'Orbs TON Access Testnet',
+                type: 'orbs',
+                network: 'testnet',
+                endpoints: { v2: 'https://ton-testnet.orbs.network/api/v2' },
+                rps: 10,
+                priority: 90,
+                enabled: true,
+                isDynamic: true,
+            },
         },
         defaults: {
             testnet: ['chainstack_testnet', 'toncenter_testnet', 'orbs_testnet'],
@@ -329,7 +343,19 @@ console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n'
                 priority: 8,
                 enabled: true,
             },
-            orbs_testnet: { ...DEFAULT_PROVIDERS.orbs_testnet, servesGetTransactions: false },
+            // Orbs is no longer a shipped default; define it inline (with the
+            // capability flag) to exercise the generic candidate-set filtering.
+            orbs_testnet: {
+                name: 'Orbs TON Access Testnet',
+                type: 'orbs',
+                network: 'testnet',
+                endpoints: { v2: 'https://ton-testnet.orbs.network/api/v2' },
+                rps: 10,
+                priority: 90,
+                enabled: true,
+                isDynamic: true,
+                servesGetTransactions: false,
+            },
         },
         defaults: {
             testnet: ['chainstack_testnet', 'toncenter_testnet', 'tatum_testnet', 'orbs_testnet'],
@@ -393,38 +419,28 @@ console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n'
     );
 }
 
-// Test 6 — rpc.json testnet PRIORITY DEMOTION (this change). Mirrors the shipped
-// rpc.json after the fix: toncenter priority 1 (primary), tatum priority 2, and
-// chainstack DEMOTED to priority 50. Proves the demotion is the lever: chainstack
-// is given a big LATENCY advantage (20ms vs 400ms) yet must NOT win — because the
-// priority gap (toncenter 1 vs chainstack 50) outweighs latency in the score. This
-// is what makes getEndpoint()/getClient() (the raw-client path uap broadcasts and
-// runs get-methods through) point at a provider that serves the FULL workload.
+// Test 6 — TRIMMED rpc.json testnet set (this change). Mirrors the shipped
+// rpc.json after the fix: the testnet default set is EXACTLY toncenter (priority
+// 1, primary) + tatum (priority 2, failover) — the non-serving providers
+// (Chainstack/Orbs/OnFinality) are removed entirely. Proves (a) with comparable
+// latency toncenter (p1) wins the score tie over tatum (p2), and (b) the available
+// pool is exactly [toncenter, tatum] with no removed provider leaking back in via
+// the "remaining" append path.
 {
     console.log(
-        '\nTest 6: rpc.json testnet demotion — toncenter(p1) wins over chainstack(p50) despite worse latency',
+        '\nTest 6: trimmed rpc.json testnet set — pool is exactly [toncenter(p1), tatum(p2)]',
     );
 
     const cfg: RpcConfig = {
         version: '1.0',
         providers: {
-            chainstack_testnet: {
-                name: 'Chainstack Testnet',
-                type: 'chainstack',
-                network: 'testnet',
-                endpoints: { v2: 'https://ton-testnet.core.chainstack.com/test/api/v2' },
-                rps: 25,
-                priority: 50, // DEMOTED (was 1)
-                enabled: true,
-                servesGetTransactions: false,
-            },
             toncenter_testnet: {
                 name: 'TON Center Testnet',
                 type: 'toncenter',
                 network: 'testnet',
                 endpoints: { v2: 'https://testnet.toncenter.com/api/v2' },
                 rps: 10,
-                priority: 1, // PROMOTED (was 5)
+                priority: 1,
                 enabled: true,
             },
             tatum_testnet: {
@@ -433,37 +449,36 @@ console.log('\n=== Testnet getTransactions selection / failover (offline) ===\n'
                 network: 'testnet',
                 endpoints: { v2: 'https://ton-testnet.gateway.tatum.io' },
                 rps: 3,
-                priority: 2, // PROMOTED (was 8)
+                priority: 2,
                 enabled: true,
             },
         },
         defaults: {
-            testnet: ['toncenter_testnet', 'tatum_testnet', 'chainstack_testnet'],
+            testnet: ['toncenter_testnet', 'tatum_testnet'],
             mainnet: [],
         },
     };
 
     const registry = new ProviderRegistry(cfg, silentLogger);
     const checker = stubHealthChecker([
-        healthy('chainstack_testnet', 'testnet', 20), // much faster, but demoted
-        healthy('toncenter_testnet', 'testnet', 400), // slower, but priority 1
-        healthy('tatum_testnet', 'testnet', 500),
+        healthy('toncenter_testnet', 'testnet', 100), // equal latency, priority 1 → wins tie
+        healthy('tatum_testnet', 'testnet', 100), // equal latency, priority 2
     ]);
     const selector = createSelector(registry, checker, undefined, silentLogger);
 
     const best = selector.getBestProvider('testnet');
     check(
-        'best testnet provider is toncenter_testnet (priority lever beats latency)',
+        'best testnet provider is toncenter_testnet (priority tie-break at equal latency)',
         best?.id === 'toncenter_testnet',
         `best: ${best?.id ?? 'none'}`,
     );
 
     const order = selector.getAvailableProviders('testnet').map((p) => p.id);
     check(
-        'available order is [toncenter, tatum, chainstack] (chainstack last)',
-        order[0] === 'toncenter_testnet' &&
-            order[1] === 'tatum_testnet' &&
-            order[order.length - 1] === 'chainstack_testnet',
+        'available pool is exactly [toncenter, tatum] (no removed provider leaks in)',
+        order.length === 2 &&
+            order[0] === 'toncenter_testnet' &&
+            order[1] === 'tatum_testnet',
         `order: [${order.join(', ')}]`,
     );
 }
